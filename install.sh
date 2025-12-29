@@ -1,97 +1,107 @@
 #!/bin/bash
 set -e
 
-# ==========================================
-#   PTP4L Web Controller 一键部署脚本 (Final Fix)
-#   Author: Vega Sun
-#   支持: Fedora/CentOS/RHEL & Debian/Ubuntu
-# ==========================================
+# ================================================================
+#   PTP4L Web Controller (v3.2 All-in-One Installer)
+#   Author: Vega Sun & Expert Assistant
+#   Target: Fresh Linux Install (CentOS/RHEL/Ubuntu/Debian)
+#   Features: 
+#     - Auto Time Sync (Fix SSL issues)
+#     - Auto Firewall Config (Port 8080)
+#     - Gunicorn + Systemd Production Setup
+#     - Full Source Code Embedded
+# ================================================================
 
-# 1. Root 权限检查
+# --- 1. Root 权限检查 ---
 if [ "$EUID" -ne 0 ]; then
-  echo "❌ 错误：请使用 root 用户运行此脚本 (例如: sudo ./install.sh)"
+  echo "❌ 错误：请使用 root 用户运行此脚本"
   exit 1
 fi
 
-# 2. 安装确认
-echo "========================================================"
-echo "   正在准备安装 PTP4L Web 控制台"
-echo "   此操作将执行以下内容："
-echo "   1. 安装 linuxptp, ethtool, python3 等依赖"
-echo "   2. 创建并注册 Systemd 服务 (修复 Debian 缺失服务问题)"
-echo "   3. 覆盖 /opt/ptp-web 目录下的旧文件"
-echo "========================================================"
-read -r -p "🤔 是否确认立即开始安装? [y/N] " response
-if [[ ! "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
-    echo "🚫 操作已取消。"
-    exit 1
-fi
+echo "🚀 开始全自动部署 (v3.2)..."
 
-echo "🚀 开始安装..."
-
-# --- 3. 操作系统检测与依赖安装 ---
-echo "[1/7] 检测操作系统并安装依赖..."
-
-if [ -f /etc/os-release ]; then
-    . /etc/os-release
-    OS=$ID
+# --- 2. 紧急时间校准 (关键步骤) ---
+# 全新系统时间经常不准，这会导致 pip 安装时的 SSL 证书错误
+echo "[1/8] 检查并校准系统时间..."
+if command -v curl &> /dev/null; then
+    # 尝试从百度抓取 HTTP 头时间 (无需 SSL)
+    NET_TIME=$(curl -I --insecure http://www.baidu.com 2>/dev/null | grep ^Date: | sed 's/Date: //g')
+    if [ -n "$NET_TIME" ]; then
+        date -s "$NET_TIME" >/dev/null
+        echo "   ✅ 时间已校准为: $(date)"
+    else
+        echo "   ⚠️ 无法获取网络时间，跳过校准 (请确保时间大致正确)"
+    fi
 else
-    echo "❌ 无法检测操作系统版本 (/etc/os-release 缺失)"
-    exit 1
+    echo "   ⚠️ 未找到 curl，跳过时间校准"
 fi
 
-echo "   -> 检测到系统: $PRETTY_NAME ($OS)"
+# --- 3. 清理旧环境 ---
+echo "[2/8] 清理旧服务..."
+systemctl stop ptp-web ptp4l phc2sys 2>/dev/null || true
+systemctl disable phc2sys 2>/dev/null || true
+rm -f /etc/systemd/system/phc2sys.service
+rm -f /etc/linuxptp/phc2sys.env
+systemctl daemon-reload
 
-COMMON_PKGS="linuxptp ethtool python3 python3-pip"
+# --- 4. 安装系统级依赖 ---
+echo "[3/8] 安装系统基础依赖..."
+if [ -f /etc/os-release ]; then . /etc/os-release; OS=$ID; else OS="unknown"; fi
+COMMON_PKGS="linuxptp ethtool python3 python3-pip curl"
 
-if [[ "$OS" == "fedora" || "$OS" == "rhel" || "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" ]]; then
-    echo "   -> 使用 dnf 安装依赖..."
+if [[ "$OS" =~ (fedora|rhel|centos|rocky|almalinux) ]]; then
+    # RHEL 系
+    echo "   检测到 RHEL/CentOS 系系统..."
     dnf install -y $COMMON_PKGS
-
-elif [[ "$OS" == "debian" || "$OS" == "ubuntu" || "$OS" == "kali" || "$OS" == "linuxmint" ]]; then
-    echo "   -> 更新 apt 缓存并安装依赖..."
+elif [[ "$OS" =~ (debian|ubuntu|kali|linuxmint) ]]; then
+    # Debian 系 (需额外安装 venv)
+    echo "   检测到 Debian/Ubuntu 系系统..."
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y $COMMON_PKGS python3-venv
 else
-    echo "❌ 不支持的操作系统: $OS"
-    exit 1
+    echo "⚠️ 未知系统 ($OS)，尝试继续..."
 fi
 
-if ! command -v ptp4l &> /dev/null; then
-    echo "❌ 错误: ptp4l 命令未找到，linuxptp 安装失败！"
-    exit 1
-fi
-echo "   ✅ 依赖安装完成"
-
-# --- 4. 创建项目目录 ---
-echo "[2/7] 创建项目目录 /opt/ptp-web ..."
-mkdir -p /opt/ptp-web/templates
+# --- 5. 初始化目录 ---
+echo "[4/8] 建立目录结构..."
+INSTALL_DIR="/opt/ptp-web"
+mkdir -p "$INSTALL_DIR/templates"
 mkdir -p /etc/linuxptp
 
-# --- 5. 配置 Python 环境 ---
-echo "[3/7] 配置 Python 虚拟环境..."
-cd /opt/ptp-web
-if [ -d ".venv" ]; then rm -rf .venv; fi
-python3 -m venv .venv
-./.venv/bin/pip install flask
+# --- 6. 写入核心文件 (Embed) ---
+echo "[5/8] 释放核心代码..."
 
-# --- 6. 写入后端代码 (app.py) ---
-echo "[4/7] 部署后端代码..."
-cat << 'EOF' > /opt/ptp-web/app.py
+# 6.1 Requirements
+cat << 'EOF' > "$INSTALL_DIR/requirements.txt"
+blinker==1.9.0
+click==8.3.1
+Flask==3.1.2
+gunicorn==23.0.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+packaging==25.0
+Werkzeug==3.1.4
+EOF
+
+# 6.2 APP.PY (v3.1 Final Logic)
+cat << 'EOF' > "$INSTALL_DIR/app.py"
 import os
 import subprocess
 import re
-import sys
 import json
 import socket
+import shutil
+import threading
+import time
 from flask import Flask, render_template, request, jsonify
 
 app = Flask(__name__)
-CONFIG_FILE = "/etc/linuxptp/ptp4l.conf"
-USER_PROFILES_FILE = "/opt/ptp-web/user_profiles.json"
 
-last_known_state = { "gm_identity": "Scanning...", "port_state": "Initializing", "offset": "0", "is_self": False }
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = "/etc/linuxptp/ptp4l.conf"
+USER_PROFILES_FILE = os.path.join(BASE_DIR, "user_profiles.json")
 
 BUILTIN_PROFILES = {
     "default": { "name": "Default (IEEE 1588)", "domain": 0, "priority1": 128, "priority2": 128, "logAnnounceInterval": 1, "logSyncInterval": 0, "logMinDelayReqInterval": 0, "announceReceiptTimeout": 3 },
@@ -99,11 +109,29 @@ BUILTIN_PROFILES = {
     "st2059": { "name": "SMPTE ST 2059-2 (Broadcast)", "domain": 127, "priority1": 128, "priority2": 128, "logAnnounceInterval": -2, "logSyncInterval": -3, "logMinDelayReqInterval": -2, "announceReceiptTimeout": 3 }
 }
 
-def run_cmd(cmd):
+def run_cmd_safe(cmd_list):
     try:
-        result = subprocess.check_output(cmd, shell=True, stderr=subprocess.STDOUT, timeout=2)
+        result = subprocess.check_output(cmd_list, stderr=subprocess.STDOUT, timeout=1)
         return result.decode('utf-8', errors='ignore')
-    except Exception: return ""
+    except: return ""
+
+def get_pmc_dict():
+    cmd = ["pmc", "-u", "-b", "0", "-d", "0", "GET PORT_DATA_SET", "GET PARENT_DATA_SET", "GET DEFAULT_DATA_SET", "GET CURRENT_DATA_SET"]
+    output = run_cmd_safe(cmd)
+    data = {}
+    states = re.findall(r'portState\s+(\w+)', output)
+    if states:
+        if 'SLAVE' in states: data['port_state'] = 'SLAVE'
+        elif 'UNCALIBRATED' in states: data['port_state'] = 'UNCALIBRATED'
+        elif all(s == 'MASTER' for s in states): data['port_state'] = 'MASTER'
+        else: data['port_state'] = states[0]
+    m = re.search(r'grandmasterIdentity\s+([0-9a-fA-F\.]+)', output)
+    if m: data['gm_id'] = m.group(1)
+    m = re.search(r'clockIdentity\s+([0-9a-fA-F\.]+)', output)
+    if m: data['clock_id'] = m.group(1)
+    m = re.search(r'offsetFromMaster\s+([0-9\.\-]+)', output)
+    if m: data['offset'] = m.group(1)
+    return data
 
 def load_user_profiles():
     if os.path.exists(USER_PROFILES_FILE):
@@ -111,285 +139,295 @@ def load_user_profiles():
         except: return {}
     return {}
 
-def save_user_profiles(profiles):
-    with open(USER_PROFILES_FILE, 'w') as f: json.dump(profiles, f, indent=4)
+def save_user_profiles(p):
+    with open(USER_PROFILES_FILE, 'w') as f: json.dump(p, f, indent=4)
+
+def restart_ptp_async():
+    def _restart():
+        time.sleep(0.5)
+        subprocess.run(["systemctl", "restart", "ptp4l"], check=False)
+    threading.Thread(target=_restart).start()
+
+def safe_int(v, d=0):
+    try: return int(v)
+    except: return d
 
 @app.route('/')
 def index():
     nics = []
-    try: nics = [n for n in os.listdir('/sys/class/net/') if 'en' in n or 'eth' in n]
+    try: nics = sorted([n for n in os.listdir('/sys/class/net/') if not n.startswith('lo')])
     except: pass
-    os_label = "Linux System"
-    try:
-        if os.path.exists("/etc/os-release"):
-            with open("/etc/os-release") as f:
-                info = {}
-                for line in f:
-                    if "=" in line: k, v = line.strip().split("=", 1); info[k] = v.strip('"')
-                if "NAME" in info and "VERSION_ID" in info: os_label = f"{info['NAME']} {info['VERSION_ID']}"
-                elif "PRETTY_NAME" in info: os_label = info["PRETTY_NAME"]
-    except: pass
-    return render_template('index.html', nics=nics, os_label=os_label, hostname=socket.gethostname())
+    return render_template('index.html', nics=nics, hostname=socket.gethostname())
 
-@app.route('/api/profiles', methods=['GET'])
-def get_profiles():
-    user_profiles = load_user_profiles()
-    combined = {}
-    for k, v in BUILTIN_PROFILES.items(): v['is_builtin'] = True; v['id'] = k; combined[k] = v
-    for k, v in user_profiles.items(): v['is_builtin'] = False; v['id'] = k; combined[k] = v
-    return jsonify(combined)
-
-@app.route('/api/profiles', methods=['POST'])
-def save_profile():
+@app.route('/api/profiles', methods=['GET', 'POST'])
+def handle_profiles():
+    if request.method == 'GET':
+        u = load_user_profiles()
+        c = {k: {**v, 'is_builtin': True, 'id': k} for k, v in BUILTIN_PROFILES.items()}
+        for k, v in u.items(): c[k] = {**v, 'is_builtin': False, 'id': k}
+        return jsonify(c)
     req = request.json
-    name = req.get('name')
-    if not name: return jsonify({"status": "error", "message": "Name required"}), 400
-    profile_id = "user_" + re.sub(r'\W+', '_', name).lower()
-    profiles = load_user_profiles()
-    profiles[profile_id] = req['config']; profiles[profile_id]['name'] = name
-    save_user_profiles(profiles)
-    return jsonify({"status": "success", "id": profile_id})
+    name = req.get('name', 'Untitled')
+    pid = "user_" + re.sub(r'\W+', '_', name).lower()
+    p = load_user_profiles()
+    p[pid] = req['config']; p[pid]['name'] = name
+    save_user_profiles(p)
+    return jsonify({"status": "success", "id": pid})
 
-@app.route('/api/profiles/<profile_id>', methods=['DELETE'])
-def delete_profile(profile_id):
-    profiles = load_user_profiles()
-    if profile_id in profiles: del profiles[profile_id]; save_user_profiles(profiles)
-        return jsonify({"status": "success"})
+@app.route('/api/profiles/<pid>', methods=['DELETE'])
+def delete_profile(pid):
+    p = load_user_profiles()
+    if pid in p: del p[pid]; save_user_profiles(p); return jsonify({"status": "success"})
     return jsonify({"status": "error"}), 404
 
 @app.route('/api/apply', methods=['POST'])
 def apply_config():
-    global last_known_state
     req = request.json
-    if not req.get('interface'): return jsonify({"status": "error"}), 400
-    content = f"[global]\nnetwork_transport UDPv4\ntime_stamping hardware\ndelay_mechanism E2E\n"
-    content += f"domainNumber {req.get('domain', 0)}\npriority1 {req.get('priority1', 128)}\npriority2 {req.get('priority2', 128)}\n"
-    content += f"logAnnounceInterval {req.get('logAnnounceInterval', 1)}\nlogSyncInterval {req.get('logSyncInterval', 0)}\n"
-    content += f"logMinDelayReqInterval {req.get('logMinDelayReqInterval', 0)}\nannounceReceiptTimeout {req.get('announceReceiptTimeout', 3)}\n"
-    content += f"logging_level 6\nuse_syslog 1\nverbose 1\ntx_timestamp_timeout 10\n\n[{req.get('interface')}]\n"
+    mode = req.get('clockMode', 'OC')
+    if os.path.exists(CONFIG_FILE): shutil.copy(CONFIG_FILE, CONFIG_FILE + ".bak")
     try:
-        with open(CONFIG_FILE, 'w') as f: f.write(content)
-        last_known_state = {"gm_identity": "Scanning...", "port_state": "Initializing", "offset": "0", "is_self": False}
-        run_cmd("systemctl restart ptp4l")
+        cfg = f"[global]\nnetwork_transport UDPv4\ntime_stamping hardware\ndelay_mechanism E2E\n"
+        cfg += f"domainNumber {safe_int(req.get('domain'))}\npriority1 {safe_int(req.get('priority1'),128)}\n"
+        cfg += f"priority2 {safe_int(req.get('priority2'),128)}\nlogAnnounceInterval {safe_int(req.get('logAnnounceInterval'),1)}\n"
+        cfg += f"logSyncInterval {safe_int(req.get('logSyncInterval'))}\nlogMinDelayReqInterval {safe_int(req.get('logMinDelayReqInterval'))}\n"
+        cfg += f"announceReceiptTimeout {safe_int(req.get('announceReceiptTimeout'),3)}\n"
+        cfg += f"logging_level 6\nuse_syslog 1\nverbose 1\n"
+        if mode == 'BC': cfg += "boundary_clock_jbod 1\n\n"
+        else: cfg += "\n"
+
+        if mode == 'BC':
+            s, m = req.get('bcSlaveIf'), req.get('bcMasterIf')
+            if not s or not m: return jsonify({"status":"error", "message":"BC needs 2 interfaces"}), 400
+            cfg += f"[{s}]\n\n[{m}]\nmasterOnly 1\n"
+        else:
+            i = req.get('interface')
+            if not i: return jsonify({"status":"error", "message":"Interface missing"}), 400
+            cfg += f"[{i}]\n"
+            
+        with open(CONFIG_FILE, 'w') as f: f.write(cfg)
+        restart_ptp_async()
         return jsonify({"status": "success"})
     except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/status')
 def get_status():
-    global last_known_state
-    display_id = last_known_state["gm_identity"]
-    if last_known_state["is_self"] and "Scanning" not in display_id and "(Self)" not in display_id:
-        display_id = f"{display_id} (Self)"
-    data = { "running": False, "gm_identity": display_id, "offset": last_known_state["offset"], "port_state": last_known_state["port_state"] }
-    if not run_cmd("pgrep -x ptp4l").strip():
-        data["port_state"] = "STOPPED"; last_known_state = {"gm_identity": "Scanning...", "port_state": "Offline", "offset": "0", "is_self": False}
-        return jsonify(data)
-    data["running"] = True
-    log_output = run_cmd("journalctl -u ptp4l -n 300 --no-pager --output cat")
-    if not log_output: return jsonify(data)
-    m = list(re.finditer(r'port \d+ .*?: \w+ to (\w+)', log_output))
-    if m: last_known_state["port_state"] = m[-1].group(1)
-    if last_known_state["port_state"] == "GRAND_MASTER": last_known_state["offset"] = "0"
-    else:
-        candidates = []
-        for x in re.finditer(r'master offset\s+([0-9-]+)', log_output): candidates.append((x.start(), x.group(1)))
-        for x in re.finditer(r'rms\s+(\d+)\s+max', log_output): candidates.append((x.start(), x.group(1)))
-        if candidates: candidates.sort(key=lambda x: x[0]); last_known_state["offset"] = candidates[-1][1]
-    gm_m = list(re.finditer(r'selected best master clock ([0-9a-f\.]+)', log_output))
-    self_m = list(re.finditer(r'assuming the grand master role', log_output))
-    if gm_m:
-        last_known_state["gm_identity"] = gm_m[-1].group(1); last_gm_idx = gm_m[-1].start()
-        last_self_idx = self_m[-1].start() if self_m else -1
-        last_known_state["is_self"] = (last_self_idx > last_gm_idx)
-    return jsonify(data)
+    d = {"ptp4l":"STOPPED","port":"Offline","offset":"0","gm":"Scanning...","is_self":False}
+    if run_cmd_safe(["pgrep","-x","ptp4l"]): d["ptp4l"]="RUNNING"
+    if d["ptp4l"]=="RUNNING":
+        p = get_pmc_dict()
+        if 'port_state' in p: d["port"]=p['port_state']
+        if 'offset' in p: d["offset"]=p['offset']
+        if 'gm_id' in p:
+            d["gm"]=p['gm_id']
+            if 'clock_id' in p and p['gm_id']==p['clock_id']: d["is_self"]=True; d["gm"]+=" (Self)"
+        if d["port"] in ["MASTER","GRAND_MASTER"]: d["offset"]="0"; d["is_self"]=True
+    return jsonify(d)
 
 @app.route('/api/logs')
-def get_logs(): return jsonify({"logs": run_cmd("journalctl -u ptp4l -n 50 --no-pager --output cat")})
+def get_logs(): return jsonify({"logs": run_cmd_safe(["journalctl","-u","ptp4l","-n","50","--no-pager","--output","cat"])})
 
 @app.route('/api/stop', methods=['POST'])
 def stop_service():
-    global last_known_state
-    run_cmd("systemctl stop ptp4l"); last_known_state = {"gm_identity": "Scanning...", "port_state": "Offline", "offset": "0", "is_self": False}
-    return jsonify({"status": "success"})
-
-if __name__ == '__main__': app.run(host='0.0.0.0', port=8080)
+    subprocess.run(["systemctl","stop","ptp4l"], check=False)
+    return jsonify({"status":"success"})
 EOF
 
-# --- 7. 写入前端代码 (index.html) ---
-echo "[5/7] 部署前端代码..."
-cat << 'EOF' > /opt/ptp-web/templates/index.html
+# 6.3 INDEX.HTML
+cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fedora PTP GM Manager</title>
-    <meta name="author" content="Vega Sun">
+    <title>PTP Controller v3.2</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        .status-box { padding: 20px; border-radius: 10px; color: white; height: 100%; display: flex; flex-direction: column; justify-content: center; }
-        .bg-running { background-color: #28a745; } .bg-stopped { background-color: #dc3545; }
-        .metric-val { font-size: 2rem; font-weight: bold; }
-        .info-card { height: 100%; border: none; box-shadow: 0 .125rem .25rem rgba(0,0,0,.075); }
-        #logWindow { background-color: #1e1e1e; color: #00ff00; font-family: 'Courier New', monospace; height: 500px; overflow-y: scroll; padding: 10px; border-radius: 5px; font-size: 0.85rem; white-space: pre-wrap; }
-        .param-group { background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 15px; border: 1px solid #dee2e6; }
-        .param-label { font-weight: 600; font-size: 0.9rem; color: #495057; }
+        .status-box { padding: 15px; border-radius: 8px; color: white; height: 100%; display: flex; flex-direction: column; justify-content: center; }
+        .bg-running { background-color: #198754; } 
+        .bg-stopped { background-color: #dc3545; }
+        .bg-slave { background-color: #0d6efd; }
+        .bg-master { background-color: #6610f2; }
+        .bg-init { background-color: #ffc107; color: black; }
+        #logWindow { background-color: #212529; color: #0f0; height: 450px; overflow-y: auto; padding: 10px; font-family: monospace; font-size: 0.8rem; }
     </style>
 </head>
 <body class="bg-light">
 <div class="container-fluid p-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <div class="d-flex align-items-baseline">
-            <h2 class="mb-0 me-3">🎥 PTP4L 控制台 <small class="text-muted fs-5">Advanced Profile Manager</small></h2>
-            <small class="text-muted" style="font-size: 0.85rem;">Designed & Developed by <strong>Vega Sun</strong></small>
-        </div>
-        <div>
-            <span class="badge bg-dark">{{ os_label }}</span>
-            <span class="badge bg-secondary">{{ hostname }}</span>
-        </div>
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h3 class="mb-0">⏱️ PTP4L Controller <small class="text-muted fs-6">v3.2</small></h3>
+        <span class="badge bg-secondary">{{ hostname }}</span>
     </div>
-    <div class="row g-3 mb-4 align-items-stretch">
-        <div class="col-md-3"><div id="statusCard" class="status-box bg-stopped shadow-sm"><h5>Systemd Service</h5><div id="serviceState" class="metric-val">STOPPED</div></div></div>
-        <div class="col-md-3"><div class="card p-3 info-card d-flex flex-column justify-content-center"><small class="text-muted">PTP Port State</small><div id="portState" class="h3 mb-0">Offline</div></div></div>
-        <div class="col-md-3"><div class="card p-3 info-card d-flex flex-column justify-content-center"><small class="text-muted">Offset from Master</small><div id="offsetVal" class="h3 mb-0">0 ns</div></div></div>
-        <div class="col-md-3"><div class="card p-3 info-card d-flex flex-column justify-content-center"><small class="text-muted">Grandmaster ID</small><div id="gmId" class="h5 mb-0 text-primary text-break">Scanning...</div></div></div>
+    <div class="row g-3 mb-3">
+        <div class="col-md-4">
+            <div id="ptpCard" class="status-box bg-stopped shadow-sm">
+                <small>Device State</small>
+                <div id="ptpState" class="h3 mb-0">STOPPED</div>
+                <small id="serviceStateDetail" class="opacity-75">Service Inactive</small>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card h-100 p-3 shadow-sm justify-content-center">
+                <small class="text-muted">Offset</small>
+                <div id="offsetVal" class="h3 mb-0 text-primary">--</div>
+                <small>ns</small>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card h-100 p-3 shadow-sm justify-content-center">
+                <small class="text-muted">Grandmaster ID</small>
+                <div id="gmId" class="h6 mb-0 text-break font-monospace">Scanning...</div>
+            </div>
+        </div>
     </div>
     <div class="row g-3">
-        <div class="col-xl-5 col-lg-6">
-            <div class="card shadow-sm"><div class="card-header bg-white"><span class="fw-bold">🛠️ 配置中心 (Configuration)</span></div>
-                <div class="card-body"><form id="configForm">
-                        <div class="param-group border-primary border-opacity-25 bg-primary bg-opacity-10"><label class="form-label fw-bold text-primary">1. Profile 模板管理</label><div class="input-group mb-2"><select class="form-select" id="profileSelect" onchange="onProfileChange()"><option value="" disabled selected>加载配置模板...</option></select><button type="button" class="btn btn-outline-success" onclick="saveProfile()">💾 保存</button><button type="button" class="btn btn-outline-danger" onclick="deleteProfile()">🗑️ 删除</button></div><small class="text-muted">选择模板将自动填充下方的具体参数。</small></div>
-                        <div class="param-group"><label class="form-label param-label">2. 基础设置 (Basic)</label><div class="mb-2"><label class="small text-muted">物理网卡 Interface</label><select class="form-select" id="interface">{% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}</select></div></div>
-                        <div class="param-group"><label class="form-label param-label">3. 核心参数 (PTP Parameters)</label>
-                            <div class="row g-2 mb-2"><div class="col-md-4"><label class="small text-muted">Domain</label><input type="number" class="form-control" id="domain" value="0"></div><div class="col-md-4"><label class="small text-muted">Priority 1</label><input type="number" class="form-control" id="priority1" value="128"></div><div class="col-md-4"><label class="small text-muted">Priority 2</label><input type="number" class="form-control" id="priority2" value="128"></div></div>
-                            <div class="row g-2 mb-2"><div class="col-md-6"><label class="small text-muted">Sync Interval</label><input type="number" class="form-control" id="logSyncInterval" value="0"></div><div class="col-md-6"><label class="small text-muted">Announce Interval</label><input type="number" class="form-control" id="logAnnounceInterval" value="1"></div></div>
-                            <div class="row g-2"><div class="col-md-6"><label class="small text-muted">Delay Req Interval</label><input type="number" class="form-control" id="logMinDelayReqInterval" value="0"></div><div class="col-md-6"><label class="small text-muted">Receipt Timeout</label><input type="number" class="form-control" id="announceReceiptTimeout" value="3"></div></div>
+        <div class="col-lg-4">
+            <div class="card shadow-sm">
+                <div class="card-header fw-bold">⚙️ Configuration</div>
+                <div class="card-body">
+                    <form id="configForm">
+                        <div class="mb-3">
+                            <label class="form-label fw-bold small text-uppercase text-secondary">Clock Mode</label>
+                            <select class="form-select" id="clockMode" onchange="toggleMode()">
+                                <option value="OC" selected>Ordinary Clock (Single Port)</option>
+                                <option value="BC">Boundary Clock (Dual Port)</option>
+                            </select>
                         </div>
-                        <div class="d-grid gap-2"><button type="button" onclick="applyConfig()" class="btn btn-primary fw-bold">▶ APPLY & RESTART</button><button type="button" onclick="stopService()" class="btn btn-danger">■ STOP</button></div>
-                    </form></div></div></div>
-        <div class="col-xl-7 col-lg-6"><div class="card shadow-sm"><div class="card-header bg-white d-flex justify-content-between align-items-center"><span class="fw-bold">📜 实时日志</span><span class="badge bg-secondary" id="logTime">Updating...</span></div><div class="card-body"><div id="logWindow">Waiting for logs...</div></div></div></div>
+                        <div id="ocPanel" class="mb-3">
+                            <label class="small text-muted">Network Interface</label>
+                            <select class="form-select" id="interface">
+                                <option value="" disabled selected>-- Select --</option>
+                                {% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}
+                            </select>
+                        </div>
+                        <div id="bcPanel" class="mb-3 border p-2 rounded bg-white" style="display:none;">
+                            <label class="small fw-bold text-primary mb-2 d-block">Boundary Clock Topology</label>
+                            <div class="mb-2"><label class="small text-muted">⬇️ Upstream (Slave/In)</label><select class="form-select form-select-sm" id="bcSlaveIf"><option value="" disabled selected>-- Select --</option>{% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}</select></div>
+                            <div class="mb-2"><label class="small text-muted">⬆️ Downstream (Master/Out)</label><select class="form-select form-select-sm" id="bcMasterIf"><option value="" disabled selected>-- Select --</option>{% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}</select></div>
+                        </div>
+                        <hr>
+                        <div class="mb-2"><label class="small text-muted">Profile</label><div class="input-group input-group-sm"><select class="form-select" id="profileSelect" onchange="loadProfileData()"></select><button type="button" class="btn btn-outline-secondary" onclick="saveProfile()">Save</button></div></div>
+                        <div class="row g-2 mb-2">
+                            <div class="col-4"><label class="small text-muted">Domain</label><input type="number" class="form-control form-control-sm" id="domain"></div>
+                            <div class="col-4"><label class="small text-muted">Prio 1</label><input type="number" class="form-control form-control-sm" id="priority1"></div>
+                            <div class="col-4"><label class="small text-muted">Prio 2</label><input type="number" class="form-control form-control-sm" id="priority2"></div>
+                        </div>
+                        <div class="row g-2 mb-2">
+                            <div class="col-6"><label class="small text-muted">Sync Int</label><input type="number" class="form-control form-control-sm" id="logSyncInterval"></div>
+                            <div class="col-6"><label class="small text-muted">Announce Int</label><input type="number" class="form-control form-control-sm" id="logAnnounceInterval"></div>
+                        </div>
+                        <div class="row g-2 mb-3">
+                            <div class="col-6"><label class="small text-muted">Delay Req</label><input type="number" class="form-control form-control-sm" id="logMinDelayReqInterval"></div>
+                            <div class="col-6"><label class="small text-muted">Receipt T/O</label><input type="number" class="form-control form-control-sm" id="announceReceiptTimeout"></div>
+                        </div>
+                        <div class="d-grid gap-2"><button type="button" onclick="applyConfig()" class="btn btn-primary btn-sm fw-bold">Apply & Restart</button><button type="button" onclick="stopService()" class="btn btn-danger btn-sm">Stop</button></div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <div class="col-lg-8">
+            <div class="card shadow-sm h-100">
+                <div class="card-header d-flex justify-content-between py-2"><span class="fw-bold small">PTP4L Logs</span><span class="badge bg-secondary" id="logTime">--:--:--</span></div>
+                <div class="card-body p-0"><div id="logWindow">Connecting...</div></div>
+            </div>
+        </div>
     </div>
 </div>
 <script>
-    let cachedProfiles = {};
-    function init() { loadProfiles(); setInterval(updateStatus, 2000); setInterval(updateLogs, 3000); updateStatus(); updateLogs(); }
-    function loadProfiles() {
-        fetch('/api/profiles').then(r => r.json()).then(data => {
-            cachedProfiles = data; const select = document.getElementById('profileSelect');
-            select.innerHTML = '<option value="" disabled selected>-- 请选择模板加载 --</option>';
-            const g1 = document.createElement('optgroup'); g1.label = "系统预设"; const g2 = document.createElement('optgroup'); g2.label = "用户自定义";
-            for (const [k, p] of Object.entries(data)) { const opt = document.createElement('option'); opt.value = k; opt.innerText = p.name; (p.is_builtin ? g1 : g2).appendChild(opt); }
-            select.appendChild(g1); select.appendChild(g2);
-        });
-    }
-    function onProfileChange() {
-        const p = cachedProfiles[document.getElementById('profileSelect').value]; if(!p) return;
-        ['domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout'].forEach(k => document.getElementById(k).value = p[k]);
-    }
-    function saveProfile() {
-        const name = prompt("Profile Name:"); if(!name) return;
-        const config = {}; ['domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout'].forEach(k => config[k] = parseInt(document.getElementById(k).value));
-        fetch('/api/profiles', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ name, config }) }).then(r => r.json()).then(res => { if(res.status === 'success') { alert("Saved!"); loadProfiles(); } else alert(res.message); });
-    }
-    function deleteProfile() {
-        const key = document.getElementById('profileSelect').value; if(!key) return;
-        if(cachedProfiles[key].is_builtin) { alert("Cannot delete built-in profile"); return; }
-        if(confirm("Delete?")) fetch(`/api/profiles/${key}`, { method: 'DELETE' }).then(r => r.json()).then(res => { if(res.status==='success') { alert("Deleted"); loadProfiles(); } else alert(res.message); });
-    }
-    function applyConfig() {
+    let profiles={}; const FIELDS=['domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout'];
+    function init(){ fetchProfiles(); setInterval(updateStatus,1500); setInterval(updateLogs,3000); }
+    function toggleMode(){ const m=document.getElementById('clockMode').value; document.getElementById('ocPanel').style.display=(m==='OC'?'block':'none'); document.getElementById('bcPanel').style.display=(m==='BC'?'block':'none'); }
+    function fetchProfiles(){ fetch('/api/profiles').then(r=>r.json()).then(d=>{ profiles=d; const s=document.getElementById('profileSelect'); s.innerHTML='<option disabled selected>-- Select --</option>'; for(let i in d){ let o=document.createElement('option'); o.value=i; o.text=d[i].name+(d[i].is_builtin?"*":""); s.add(o); } }); }
+    function loadProfileData(){ const p=document.getElementById('profileSelect').value; if(profiles[p]) FIELDS.forEach(f=>{ let el=document.getElementById(f); if(el) el.value=profiles[p][f]||0; }); }
+    function applyConfig(){
+        const m=document.getElementById('clockMode').value; const d={clockMode:m};
+        if(m==='BC'){ d.bcSlaveIf=document.getElementById('bcSlaveIf').value; d.bcMasterIf=document.getElementById('bcMasterIf').value; if(!d.bcSlaveIf||!d.bcMasterIf||d.bcSlaveIf===d.bcMasterIf){ alert("Invalid BC Interface Config"); return; } }
+        else{ d.interface=document.getElementById('interface').value; if(!d.interface){ alert("Select Interface"); return; } }
         if(!confirm("Apply & Restart?")) return;
-        const data = { interface: document.getElementById('interface').value };
-        ['domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout'].forEach(k => data[k] = parseInt(document.getElementById(k).value));
-        fetch('/api/apply', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) }).then(r => r.json()).then(res => { if(res.status==='success') setTimeout(updateStatus, 1000); else alert(res.message); });
+        FIELDS.forEach(f=>{ let el=document.getElementById(f); d[f]=el?el.value:0; });
+        fetch('/api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)}).then(r=>r.json()).then(r=>{ if(r.status==='success') alert("✅ Success!"); else alert("❌ "+r.message); }).catch(e=>alert("Error:"+e));
     }
-    function updateStatus() {
-        fetch('/api/status').then(r => r.json()).then(data => {
-            const card = document.getElementById('statusCard');
-            if (data.port_state === "STOPPED") { card.className = 'status-box bg-stopped shadow-sm'; document.getElementById('serviceState').innerText = "STOPPED"; }
-            else { card.className = 'status-box bg-running shadow-sm'; document.getElementById('serviceState').innerText = "RUNNING"; }
-            document.getElementById('portState').innerText = data.port_state || "Offline";
-            document.getElementById('gmId').innerText = data.gm_identity || "N/A";
-            document.getElementById('offsetVal').innerText = (data.offset || "0") + " ns";
-        });
-    }
-    function updateLogs() {
-        fetch('/api/logs').then(r => r.json()).then(data => {
-            const el = document.getElementById('logWindow'); const bottom = el.scrollHeight - el.clientHeight <= el.scrollTop + 50;
-            el.innerText = data.logs; document.getElementById('logTime').innerText = new Date().toLocaleTimeString();
-            if(bottom) el.scrollTop = el.scrollHeight;
-        });
-    }
-    function stopService() { if(confirm("Stop Service?")) fetch('/api/stop', { method: 'POST' }).then(() => updateStatus()); }
+    function updateStatus(){ fetch('/api/status').then(r=>r.json()).then(d=>{
+        const c=document.getElementById('ptpCard'), t=document.getElementById('ptpState');
+        if(d.ptp4l==='RUNNING'){
+            t.innerText=d.port||"UNKNOWN"; document.getElementById('serviceStateDetail').innerText="Running";
+            if(d.port==='SLAVE') c.className='status-box bg-slave shadow-sm'; else if(d.port==='MASTER'||d.port==='GRAND_MASTER') c.className='status-box bg-master shadow-sm'; else c.className='status-box bg-running shadow-sm';
+        } else { c.className='status-box bg-stopped shadow-sm'; t.innerText="STOPPED"; document.getElementById('serviceStateDetail').innerText="Inactive"; }
+        document.getElementById('offsetVal').innerText=d.offset; document.getElementById('gmId').innerText=d.gm||"N/A";
+    }).catch(()=>{}); }
+    function updateLogs(){ fetch('/api/logs').then(r=>r.json()).then(d=>{ const w=document.getElementById('logWindow'); if(w){ w.innerText=d.logs; w.scrollTop=w.scrollHeight; } }).catch(()=>{}); }
+    function saveProfile(){ let n=prompt("Name:"); if(n){ let c={}; FIELDS.forEach(f=>c[f]=document.getElementById(f).value); fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,config:c})}).then(()=>fetchProfiles()); } }
+    function stopService(){ if(confirm("Stop?")) fetch('/api/stop',{method:'POST'}); }
     init();
 </script>
 </body>
 </html>
 EOF
 
-# --- 8. 手动创建 Systemd 服务文件 (修复 Debian/Ubuntu 缺失) ---
-echo "[6/7] 配置 PTP4L Systemd 服务..."
-# 无论系统是否有默认服务，都直接创建/覆盖 /etc/systemd/system/ptp4l.service
-# 这样既解决了 Debian 没服务的问题，也确保了 Fedora 读取正确的配置文件
+# --- 7. 配置 Python 环境 ---
+echo "[6/8] 配置 Python 虚拟环境..."
+cd "$INSTALL_DIR"
+# 即使有旧的也删除，确保依赖纯净
+rm -rf .venv
+python3 -m venv .venv
+./.venv/bin/pip install --upgrade pip
+# 安装锁定的依赖
+./.venv/bin/pip install -r requirements.txt
+
+# --- 8. 配置 Systemd & Firewall ---
+echo "[7/8] 配置服务与防火墙..."
+
+# 8.1 防火墙配置 (放行 8080)
+if command -v firewall-cmd &> /dev/null; then
+    echo "   正在配置 firewalld (CentOS/RHEL)..."
+    firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+elif command -v ufw &> /dev/null; then
+    echo "   正在配置 ufw (Ubuntu/Debian)..."
+    ufw allow 8080/tcp >/dev/null 2>&1 || true
+fi
+
+# 8.2 Systemd 服务
 cat << 'EOF' > /etc/systemd/system/ptp4l.service
 [Unit]
 Description=Precision Time Protocol (PTP) service
 After=network.target
-
 [Service]
 Type=simple
 ExecStart=/usr/sbin/ptp4l -f /etc/linuxptp/ptp4l.conf
 Restart=always
-
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# --- 9. 配置和启动 Web 服务 ---
-echo "[7/7] 配置并启动 Web 服务..."
 cat << 'EOF' > /etc/systemd/system/ptp-web.service
 [Unit]
 Description=PTP Web Controller UI
 After=network.target
-
 [Service]
 Type=simple
 User=root
 WorkingDirectory=/opt/ptp-web
-ExecStart=/opt/ptp-web/.venv/bin/python /opt/ptp-web/app.py
+ExecStart=/opt/ptp-web/.venv/bin/gunicorn --workers 4 --bind 0.0.0.0:8080 app:app
 Restart=always
-
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# --- 10. 服务激活与防火墙 ---
-echo "重启 Systemd 并激活服务..."
+# --- 9. 启动 ---
+echo "[8/8] 启动服务..."
 systemctl daemon-reload
-systemctl enable --now ptp-web
-systemctl enable ptp4l
+systemctl enable ptp4l ptp-web
+systemctl restart ptp-web
 
-echo "配置防火墙端口 8080..."
-# 检查 firewalld (Fedora/CentOS)
-if command -v firewall-cmd &> /dev/null; then
-    firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
-    firewall-cmd --reload >/dev/null 2>&1 || true
-    echo "   -> 已通过 firewall-cmd 放行"
-# 检查 ufw (Debian/Ubuntu)
-elif command -v ufw &> /dev/null; then
-    ufw allow 8080/tcp >/dev/null 2>&1 || true
-    echo "   -> 已通过 ufw 放行"
+# 获取 IP (兼容精简版系统)
+if command -v hostname &> /dev/null; then
+    IP=$(hostname -I | awk '{print $1}')
 else
-    echo "   ⚠️ 未检测到常用防火墙管理工具，请手动放行 TCP 8080"
+    IP=$(ip route get 1 | awk '{print $7;exit}')
 fi
 
-# 权限修正 (防止SELinux拦截)
-if command -v chcon &> /dev/null; then
-    chcon -R -t httpd_sys_content_t /opt/ptp-web >/dev/null 2>&1 || true
-fi
-
-# 获取 IP
-IP=$(hostname -I | awk '{print $1}')
-echo "========================================================"
-echo "   ✅ 安装完成！ SUCCESS!"
-echo "   请访问: http://$IP:8080"
-echo "========================================================"
+echo "=========================================================="
+echo "   ✅ PTP4L 控制台安装完成 (v3.2)！"
+echo "   👉 访问地址: http://$IP:8080"
+echo "   👉 功能: 监控 + BC 模式 + 无 PHC 干扰"
+echo "=========================================================="
