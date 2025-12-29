@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fedora PTP GM Manager</title>
+    <meta name="author" content="Vega Sun">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        /* 状态卡片样式 */
+        .status-box { 
+            padding: 20px; 
+            border-radius: 10px; 
+            color: white; 
+            height: 100%; 
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+        .bg-running { background-color: #28a745; }
+        .bg-stopped { background-color: #dc3545; }
+        .bg-init { background-color: #ffc107; color: black; }
+        .metric-val { font-size: 2rem; font-weight: bold; }
+        
+        /* 顶部信息卡片 */
+        .info-card {
+            height: 100%; 
+            border: none;
+            box-shadow: 0 .125rem .25rem rgba(0,0,0,.075);
+        }
+
+        /* 日志窗口样式 - 固定 500px */
+        #logWindow {
+            background-color: #1e1e1e; color: #00ff00;
+            font-family: 'Courier New', monospace;
+            height: 500px; 
+            overflow-y: scroll;
+            padding: 10px; border-radius: 5px; font-size: 0.85rem;
+            white-space: pre-wrap;
+        }
+        
+        .param-group { background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 15px; border: 1px solid #dee2e6; }
+        .param-label { font-weight: 600; font-size: 0.9rem; color: #495057; }
+    </style>
+</head>
+<body class="bg-light">
+
+<div class="container-fluid p-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div class="d-flex align-items-baseline">
+            <h2 class="mb-0 me-3">🎥 PTP4L 控制台 <small class="text-muted fs-5">Advanced Profile Manager</small></h2>
+            <small class="text-muted" style="font-size: 0.85rem;">Designed & Developed by <strong>Vega Sun</strong></small>
+        </div>
+        
+        <div>
+            <span class="badge bg-dark">{{ os_label }}</span>
+            <span class="badge bg-secondary">{{ hostname }}</span>
+        </div>
+    </div>
+    
+    <div class="row g-3 mb-4 align-items-stretch">
+        <div class="col-md-3">
+            <div id="statusCard" class="status-box bg-stopped shadow-sm">
+                <h5>Systemd Service</h5>
+                <div id="serviceState" class="metric-val">STOPPED</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card p-3 info-card d-flex flex-column justify-content-center">
+                <small class="text-muted">PTP Port State</small>
+                <div id="portState" class="h3 mb-0">Offline</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card p-3 info-card d-flex flex-column justify-content-center">
+                <small class="text-muted">Offset from Master</small>
+                <div id="offsetVal" class="h3 mb-0">0 ns</div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card p-3 info-card d-flex flex-column justify-content-center">
+                <small class="text-muted">Grandmaster ID</small>
+                <div id="gmId" class="h5 mb-0 text-primary text-break">Scanning...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3">
+        <div class="col-xl-5 col-lg-6">
+            <div class="card shadow-sm">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <span class="fw-bold">🛠️ 配置中心 (Configuration)</span>
+                </div>
+                <div class="card-body">
+                    <form id="configForm">
+                        <div class="param-group border-primary border-opacity-25 bg-primary bg-opacity-10">
+                            <label class="form-label fw-bold text-primary">1. Profile 模板管理</label>
+                            <div class="input-group mb-2">
+                                <select class="form-select" id="profileSelect" onchange="onProfileChange()">
+                                    <option value="" disabled selected>加载配置模板...</option>
+                                    </select>
+                                <button type="button" class="btn btn-outline-success" onclick="saveProfile()">💾 保存</button>
+                                <button type="button" class="btn btn-outline-danger" onclick="deleteProfile()">🗑️ 删除</button>
+                            </div>
+                            <small class="text-muted">选择模板将自动填充下方的具体参数。</small>
+                        </div>
+
+                        <div class="param-group">
+                            <label class="form-label param-label">2. 基础设置 (Basic)</label>
+                            <div class="mb-2">
+                                <label class="small text-muted">物理网卡 Interface</label>
+                                <select class="form-select" id="interface">
+                                    {% for nic in nics %}
+                                    <option value="{{ nic }}">{{ nic }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="param-group">
+                            <label class="form-label param-label">3. 核心参数 (PTP Parameters)</label>
+                            
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-4">
+                                    <label class="small text-muted">Domain Number</label>
+                                    <input type="number" class="form-control" id="domain" value="0">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="small text-muted">Priority 1</label>
+                                    <input type="number" class="form-control" id="priority1" value="128">
+                                </div>
+                                <div class="col-md-4">
+                                    <label class="small text-muted">Priority 2</label>
+                                    <input type="number" class="form-control" id="priority2" value="128">
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-md-6">
+                                    <label class="small text-muted">Sync Interval (2^x sec)</label>
+                                    <input type="number" class="form-control" id="logSyncInterval" value="0">
+                                    <div class="form-text" style="font-size: 0.75rem">ST2110: -3 | Default: 0</div>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="small text-muted">Announce Interval (2^x sec)</label>
+                                    <input type="number" class="form-control" id="logAnnounceInterval" value="1">
+                                    <div class="form-text" style="font-size: 0.75rem">ST2110: -2 to 0 | Default: 1</div>
+                                </div>
+                            </div>
+
+                            <div class="row g-2">
+                                <div class="col-md-6">
+                                    <label class="small text-muted">Delay Req Interval (2^x sec)</label>
+                                    <input type="number" class="form-control" id="logMinDelayReqInterval" value="0">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="small text-muted">Announce Receipt Timeout</label>
+                                    <input type="number" class="form-control" id="announceReceiptTimeout" value="3">
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="d-grid gap-2">
+                            <button type="button" onclick="applyConfig()" class="btn btn-primary py-2 fw-bold">
+                                ▶ 应用配置到系统并重启服务 (APPLY)
+                            </button>
+                            <button type="button" onclick="stopService()" class="btn btn-danger">
+                                ■ 停止服务 (STOP)
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-xl-7 col-lg-6">
+            <div class="card shadow-sm">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                    <span class="fw-bold">📜 实时日志 (Journalctl)</span>
+                    <span class="badge bg-secondary" id="logTime">Updating...</span>
+                </div>
+                <div class="card-body">
+                    <div id="logWindow">Waiting for logs...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let cachedProfiles = {};
+
+    function init() {
+        loadProfiles();
+        setInterval(updateStatus, 2000);
+        setInterval(updateLogs, 3000);
+        updateStatus();
+        updateLogs();
+    }
+
+    // --- Profile 逻辑 ---
+    function loadProfiles() {
+        fetch('/api/profiles')
+            .then(r => r.json())
+            .then(data => {
+                cachedProfiles = data;
+                const select = document.getElementById('profileSelect');
+                select.innerHTML = '<option value="" disabled selected>-- 请选择模板加载 --</option>';
+                
+                const optGroupBuiltin = document.createElement('optgroup');
+                optGroupBuiltin.label = "系统预设 (Built-in)";
+                const optGroupUser = document.createElement('optgroup');
+                optGroupUser.label = "用户自定义 (User)";
+                
+                for (const [key, p] of Object.entries(data)) {
+                    const opt = document.createElement('option');
+                    opt.value = key;
+                    opt.innerText = p.name;
+                    if(p.is_builtin) optGroupBuiltin.appendChild(opt);
+                    else optGroupUser.appendChild(opt);
+                }
+                select.appendChild(optGroupBuiltin);
+                select.appendChild(optGroupUser);
+            });
+    }
+
+    function onProfileChange() {
+        const key = document.getElementById('profileSelect').value;
+        const p = cachedProfiles[key];
+        if(!p) return;
+
+        document.getElementById('domain').value = p.domain;
+        document.getElementById('priority1').value = p.priority1;
+        document.getElementById('priority2').value = p.priority2;
+        document.getElementById('logSyncInterval').value = p.logSyncInterval;
+        document.getElementById('logAnnounceInterval').value = p.logAnnounceInterval;
+        document.getElementById('logMinDelayReqInterval').value = p.logMinDelayReqInterval;
+        document.getElementById('announceReceiptTimeout').value = p.announceReceiptTimeout;
+    }
+
+    function saveProfile() {
+        const name = prompt("请输入新 Profile 的名称 (例如: My ST2110 Config):");
+        if(!name) return;
+
+        const config = {
+            domain: parseInt(document.getElementById('domain').value),
+            priority1: parseInt(document.getElementById('priority1').value),
+            priority2: parseInt(document.getElementById('priority2').value),
+            logSyncInterval: parseInt(document.getElementById('logSyncInterval').value),
+            logAnnounceInterval: parseInt(document.getElementById('logAnnounceInterval').value),
+            logMinDelayReqInterval: parseInt(document.getElementById('logMinDelayReqInterval').value),
+            announceReceiptTimeout: parseInt(document.getElementById('announceReceiptTimeout').value)
+        };
+
+        fetch('/api/profiles', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ name: name, config: config })
+        })
+        .then(r => r.json())
+        .then(res => {
+            if(res.status === 'success') {
+                alert("保存成功！");
+                loadProfiles();
+            } else {
+                alert("保存失败: " + res.message);
+            }
+        });
+    }
+
+    function deleteProfile() {
+        const key = document.getElementById('profileSelect').value;
+        if(!key) { alert("请先选择一个 Profile"); return; }
+        
+        if(cachedProfiles[key].is_builtin) {
+            alert("无法删除系统内置 Profile！");
+            return;
+        }
+
+        if(confirm(`确定要删除 Profile "${cachedProfiles[key].name}" 吗？`)) {
+            fetch(`/api/profiles/${key}`, { method: 'DELETE' })
+            .then(r => r.json())
+            .then(res => {
+                if(res.status === 'success') {
+                    alert("删除成功");
+                    loadProfiles();
+                } else {
+                    alert("删除失败: " + res.message);
+                }
+            });
+        }
+    }
+
+    function applyConfig() {
+        const data = {
+            interface: document.getElementById('interface').value,
+            domain: parseInt(document.getElementById('domain').value),
+            priority1: parseInt(document.getElementById('priority1').value),
+            priority2: parseInt(document.getElementById('priority2').value),
+            logSyncInterval: parseInt(document.getElementById('logSyncInterval').value),
+            logAnnounceInterval: parseInt(document.getElementById('logAnnounceInterval').value),
+            logMinDelayReqInterval: parseInt(document.getElementById('logMinDelayReqInterval').value),
+            announceReceiptTimeout: parseInt(document.getElementById('announceReceiptTimeout').value)
+        };
+
+        if(confirm("确定要应用当前参数并重启服务吗？")) {
+            fetch('/api/apply', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(data)
+            })
+            .then(r => r.json())
+            .then(res => {
+                if(res.status === 'success'){
+                    setTimeout(updateStatus, 1000);
+                } else {
+                    alert("Error: " + res.message);
+                }
+            });
+        }
+    }
+
+    // --- 监控逻辑 ---
+    function updateStatus() {
+        fetch('/api/status')
+            .then(r => r.json())
+            .then(data => {
+                const card = document.getElementById('statusCard');
+                const stateText = document.getElementById('serviceState');
+                const portText = document.getElementById('portState');
+                
+                if (data.port_state === "STOPPED") {
+                    card.className = 'status-box bg-stopped shadow-sm';
+                    stateText.innerText = "STOPPED";
+                    portText.innerText = "Offline";
+                } else {
+                    card.className = 'status-box bg-running shadow-sm';
+                    stateText.innerText = "RUNNING";
+                    portText.innerText = data.port_state || "Unknown";
+                }
+
+                document.getElementById('gmId').innerText = data.gm_identity || "N/A";
+                document.getElementById('offsetVal').innerText = (data.offset || "0") + " ns";
+            });
+    }
+
+    function updateLogs() {
+        fetch('/api/logs')
+            .then(r => r.json())
+            .then(data => {
+                const logWin = document.getElementById('logWindow');
+                const isScrolledToBottom = logWin.scrollHeight - logWin.clientHeight <= logWin.scrollTop + 50;
+                logWin.innerText = data.logs;
+                document.getElementById('logTime').innerText = new Date().toLocaleTimeString();
+                if(isScrolledToBottom) logWin.scrollTop = logWin.scrollHeight;
+            });
+    }
+
+    function stopService() {
+        if(confirm("确定要停止 PTP 服务吗？")) {
+            fetch('/api/stop', { method: 'POST' }).then(() => updateStatus());
+        }
+    }
+
+    init();
+</script>
+
+</body>
+</html>
