@@ -22,8 +22,11 @@ Bash
 
 ## 下载并运行安装脚本
 curl -O https://raw.githubusercontent.com/SileNt525/ptp4l-web-controller/main/install.sh
+
 chmod +x install.sh
+
 sudo ./install.sh
+
 安装完成后，访问：http://<服务器IP>:8080
 
 # 🛠️ 手动安装
@@ -32,8 +35,11 @@ sudo ./install.sh
 ## 安装依赖：
 
 ### Fedora/CentOS
+
 dnf install linuxptp ethtool python3
+
 ### Debian/Ubuntu
+
 apt install linuxptp ethtool python3 python3-venv
 
 ## 克隆仓库：
