@@ -100,7 +100,9 @@ def safe_int(val, default=0):
 def index():
     nics = []
     try:
+        # Standard Linux NIC detection
         nics = [n for n in os.listdir('/sys/class/net/') if not n.startswith('lo')]
+        nics.sort()
     except:
         pass
     return render_template('index.html', nics=nics, hostname=socket.gethostname())
@@ -231,7 +233,3 @@ def get_logs():
 def stop_service():
     subprocess.run(["systemctl", "stop", "ptp4l"], check=False)
     return jsonify({"status": "success"})
-
-if __name__ == '__main__':
-    # For manual debugging
-    app.run(host='0.0.0.0', port=5000)
