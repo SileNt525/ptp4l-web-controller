@@ -3,184 +3,128 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fedora PTP GM Manager</title>
-    <meta name="author" content="Vega Sun">
+    <title>PTP Controller v3.1</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        /* 状态卡片样式 */
-        .status-box { 
-            padding: 20px; 
-            border-radius: 10px; 
-            color: white; 
-            height: 100%; 
-            display: flex;
-            flex-direction: column;
-            justify-content: center;
-        }
-        .bg-running { background-color: #28a745; }
+        .status-box { padding: 15px; border-radius: 8px; color: white; height: 100%; display: flex; flex-direction: column; justify-content: center; }
+        .bg-running { background-color: #198754; } 
         .bg-stopped { background-color: #dc3545; }
+        .bg-slave { background-color: #0d6efd; }
+        .bg-master { background-color: #6610f2; }
         .bg-init { background-color: #ffc107; color: black; }
-        .metric-val { font-size: 2rem; font-weight: bold; }
-        
-        /* 顶部信息卡片 */
-        .info-card {
-            height: 100%; 
-            border: none;
-            box-shadow: 0 .125rem .25rem rgba(0,0,0,.075);
-        }
-
-        /* 日志窗口样式 - 固定 500px */
-        #logWindow {
-            background-color: #1e1e1e; color: #00ff00;
-            font-family: 'Courier New', monospace;
-            height: 500px; 
-            overflow-y: scroll;
-            padding: 10px; border-radius: 5px; font-size: 0.85rem;
-            white-space: pre-wrap;
-        }
-        
-        .param-group { background: #f8f9fa; padding: 15px; border-radius: 5px; margin-bottom: 15px; border: 1px solid #dee2e6; }
-        .param-label { font-weight: 600; font-size: 0.9rem; color: #495057; }
+        #logWindow { background-color: #212529; color: #0f0; height: 450px; overflow-y: auto; padding: 10px; font-family: monospace; font-size: 0.8rem; }
     </style>
 </head>
 <body class="bg-light">
-
 <div class="container-fluid p-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
-        <div class="d-flex align-items-baseline">
-            <h2 class="mb-0 me-3">🎥 PTP4L 控制台 <small class="text-muted fs-5">Advanced Profile Manager</small></h2>
-            <small class="text-muted" style="font-size: 0.85rem;">Designed & Developed by <strong>Vega Sun</strong></small>
-        </div>
-        
-        <div>
-            <span class="badge bg-dark">{{ os_label }}</span>
-            <span class="badge bg-secondary">{{ hostname }}</span>
-        </div>
+    <div class="d-flex justify-content-between align-items-center mb-3">
+        <h3 class="mb-0">⏱️ PTP4L Controller <small class="text-muted fs-6">v3.1 (BC Support) by Vega Sun</small></h3>
+        <span class="badge bg-secondary">{{ hostname }}</span>
     </div>
-    
-    <div class="row g-3 mb-4 align-items-stretch">
-        <div class="col-md-3">
-            <div id="statusCard" class="status-box bg-stopped shadow-sm">
-                <h5>Systemd Service</h5>
-                <div id="serviceState" class="metric-val">STOPPED</div>
+
+    <div class="row g-3 mb-3">
+        <div class="col-md-4">
+            <div id="ptpCard" class="status-box bg-stopped shadow-sm">
+                <small>Device State</small>
+                <div id="ptpState" class="h3 mb-0">STOPPED</div>
+                <small id="serviceStateDetail" class="opacity-75">Service Inactive</small>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card p-3 info-card d-flex flex-column justify-content-center">
-                <small class="text-muted">PTP Port State</small>
-                <div id="portState" class="h3 mb-0">Offline</div>
+        <div class="col-md-4">
+            <div class="card h-100 p-3 shadow-sm justify-content-center">
+                <small class="text-muted">Offset</small>
+                <div id="offsetVal" class="h3 mb-0 text-primary">--</div>
+                <small>ns</small>
             </div>
         </div>
-        <div class="col-md-3">
-            <div class="card p-3 info-card d-flex flex-column justify-content-center">
-                <small class="text-muted">Offset from Master</small>
-                <div id="offsetVal" class="h3 mb-0">0 ns</div>
-            </div>
-        </div>
-        <div class="col-md-3">
-            <div class="card p-3 info-card d-flex flex-column justify-content-center">
+        <div class="col-md-4">
+            <div class="card h-100 p-3 shadow-sm justify-content-center">
                 <small class="text-muted">Grandmaster ID</small>
-                <div id="gmId" class="h5 mb-0 text-primary text-break">Scanning...</div>
+                <div id="gmId" class="h6 mb-0 text-break font-monospace">Scanning...</div>
             </div>
         </div>
     </div>
 
     <div class="row g-3">
-        <div class="col-xl-5 col-lg-6">
+        <div class="col-lg-4">
             <div class="card shadow-sm">
-                <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                    <span class="fw-bold">🛠️ 配置中心 (Configuration)</span>
-                </div>
+                <div class="card-header fw-bold">⚙️ Configuration</div>
                 <div class="card-body">
                     <form id="configForm">
-                        <div class="param-group border-primary border-opacity-25 bg-primary bg-opacity-10">
-                            <label class="form-label fw-bold text-primary">1. Profile 模板管理</label>
-                            <div class="input-group mb-2">
-                                <select class="form-select" id="profileSelect" onchange="onProfileChange()">
-                                    <option value="" disabled selected>加载配置模板...</option>
-                                    </select>
-                                <button type="button" class="btn btn-outline-success" onclick="saveProfile()">💾 保存</button>
-                                <button type="button" class="btn btn-outline-danger" onclick="deleteProfile()">🗑️ 删除</button>
-                            </div>
-                            <small class="text-muted">选择模板将自动填充下方的具体参数。</small>
+                        <div class="mb-3">
+                            <label class="form-label fw-bold">Device Mode</label>
+                            <select class="form-select" id="clockMode" onchange="toggleMode()">
+                                <option value="OC" selected>Ordinary Clock (单口终端)</option>
+                                <option value="BC">Boundary Clock (双口转发)</option>
+                            </select>
                         </div>
 
-                        <div class="param-group">
-                            <label class="form-label param-label">2. 基础设置 (Basic)</label>
+                        <div id="ocPanel" class="mb-3">
+                            <label class="small text-muted">Network Interface</label>
+                            <select class="form-select" id="interface">
+                                {% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}
+                            </select>
+                        </div>
+
+                        <div id="bcPanel" class="mb-3 border p-2 rounded bg-light" style="display:none;">
+                            <label class="small fw-bold text-primary mb-2">Boundary Clock Settings</label>
+                            
                             <div class="mb-2">
-                                <label class="small text-muted">物理网卡 Interface</label>
-                                <select class="form-select" id="interface">
-                                    {% for nic in nics %}
-                                    <option value="{{ nic }}">{{ nic }}</option>
-                                    {% endfor %}
+                                <label class="small text-muted">⬇️ Upstream (接收来自 GM)</label>
+                                <select class="form-select form-select-sm" id="bcSlaveIf">
+                                    <option value="" disabled selected>Select In-Port...</option>
+                                    {% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}
                                 </select>
                             </div>
-                        </div>
-
-                        <div class="param-group">
-                            <label class="form-label param-label">3. 核心参数 (PTP Parameters)</label>
                             
-                            <div class="row g-2 mb-2">
-                                <div class="col-md-4">
-                                    <label class="small text-muted">Domain Number</label>
-                                    <input type="number" class="form-control" id="domain" value="0">
-                                </div>
-                                <div class="col-md-4">
-                                    <label class="small text-muted">Priority 1</label>
-                                    <input type="number" class="form-control" id="priority1" value="128">
-                                </div>
-                                <div class="col-md-4">
-                                    <label class="small text-muted">Priority 2</label>
-                                    <input type="number" class="form-control" id="priority2" value="128">
-                                </div>
+                            <div class="mb-2">
+                                <label class="small text-muted">⬆️ Downstream (转发给从站)</label>
+                                <select class="form-select form-select-sm" id="bcMasterIf">
+                                    <option value="" disabled selected>Select Out-Port...</option>
+                                    {% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}
+                                </select>
                             </div>
+                            <div class="form-text text-danger" style="font-size:0.75rem" id="bcWarn"></div>
+                        </div>
 
-                            <div class="row g-2 mb-2">
-                                <div class="col-md-6">
-                                    <label class="small text-muted">Sync Interval (2^x sec)</label>
-                                    <input type="number" class="form-control" id="logSyncInterval" value="0">
-                                    <div class="form-text" style="font-size: 0.75rem">ST2110: -3 | Default: 0</div>
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="small text-muted">Announce Interval (2^x sec)</label>
-                                    <input type="number" class="form-control" id="logAnnounceInterval" value="1">
-                                    <div class="form-text" style="font-size: 0.75rem">ST2110: -2 to 0 | Default: 1</div>
-                                </div>
-                            </div>
-
-                            <div class="row g-2">
-                                <div class="col-md-6">
-                                    <label class="small text-muted">Delay Req Interval (2^x sec)</label>
-                                    <input type="number" class="form-control" id="logMinDelayReqInterval" value="0">
-                                </div>
-                                <div class="col-md-6">
-                                    <label class="small text-muted">Announce Receipt Timeout</label>
-                                    <input type="number" class="form-control" id="announceReceiptTimeout" value="3">
-                                </div>
+                        <hr>
+                        <div class="mb-2">
+                            <label class="small text-muted">Profile</label>
+                            <div class="input-group input-group-sm">
+                                <select class="form-select" id="profileSelect" onchange="loadProfileData()"></select>
+                                <button type="button" class="btn btn-outline-secondary" onclick="saveProfile()">Save</button>
                             </div>
                         </div>
 
+                        <div class="row g-2 mb-2">
+                            <div class="col-4"><label class="small text-muted">Domain</label><input type="number" class="form-control form-control-sm" id="domain"></div>
+                            <div class="col-4"><label class="small text-muted">Prio 1</label><input type="number" class="form-control form-control-sm" id="priority1"></div>
+                            <div class="col-4"><label class="small text-muted">Prio 2</label><input type="number" class="form-control form-control-sm" id="priority2"></div>
+                        </div>
+                        <div class="row g-2 mb-2">
+                            <div class="col-6"><label class="small text-muted">Sync Int</label><input type="number" class="form-control form-control-sm" id="logSyncInterval"></div>
+                            <div class="col-6"><label class="small text-muted">Announce Int</label><input type="number" class="form-control form-control-sm" id="logAnnounceInterval"></div>
+                        </div>
+                        <div class="row g-2 mb-3">
+                            <div class="col-6"><label class="small text-muted">Delay Req</label><input type="number" class="form-control form-control-sm" id="logMinDelayReqInterval"></div>
+                            <div class="col-6"><label class="small text-muted">Receipt T/O</label><input type="number" class="form-control form-control-sm" id="announceReceiptTimeout"></div>
+                        </div>
                         <div class="d-grid gap-2">
-                            <button type="button" onclick="applyConfig()" class="btn btn-primary py-2 fw-bold">
-                                ▶ 应用配置到系统并重启服务 (APPLY)
-                            </button>
-                            <button type="button" onclick="stopService()" class="btn btn-danger">
-                                ■ 停止服务 (STOP)
-                            </button>
+                            <button type="button" onclick="applyConfig()" class="btn btn-primary btn-sm fw-bold">Apply & Restart</button>
+                            <button type="button" onclick="stopService()" class="btn btn-danger btn-sm">Stop</button>
                         </div>
                     </form>
                 </div>
             </div>
         </div>
-
-        <div class="col-xl-7 col-lg-6">
-            <div class="card shadow-sm">
-                <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                    <span class="fw-bold">📜 实时日志 (Journalctl)</span>
-                    <span class="badge bg-secondary" id="logTime">Updating...</span>
+        <div class="col-lg-8">
+            <div class="card shadow-sm h-100">
+                <div class="card-header d-flex justify-content-between py-2">
+                    <span class="fw-bold small">PTP4L Logs</span>
+                    <span class="badge bg-secondary" id="logTime">--:--:--</span>
                 </div>
-                <div class="card-body">
-                    <div id="logWindow">Waiting for logs...</div>
+                <div class="card-body p-0">
+                    <div id="logWindow">Connecting...</div>
                 </div>
             </div>
         </div>
@@ -188,182 +132,111 @@
 </div>
 
 <script>
-    let cachedProfiles = {};
+    let profiles = {};
+    const FIELDS = ['domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout'];
 
     function init() {
-        loadProfiles();
-        setInterval(updateStatus, 2000);
+        fetchProfiles();
+        setInterval(updateStatus, 1500);
         setInterval(updateLogs, 3000);
-        updateStatus();
-        updateLogs();
     }
 
-    // --- Profile 逻辑 ---
-    function loadProfiles() {
-        fetch('/api/profiles')
-            .then(r => r.json())
-            .then(data => {
-                cachedProfiles = data;
-                const select = document.getElementById('profileSelect');
-                select.innerHTML = '<option value="" disabled selected>-- 请选择模板加载 --</option>';
-                
-                const optGroupBuiltin = document.createElement('optgroup');
-                optGroupBuiltin.label = "系统预设 (Built-in)";
-                const optGroupUser = document.createElement('optgroup');
-                optGroupUser.label = "用户自定义 (User)";
-                
-                for (const [key, p] of Object.entries(data)) {
-                    const opt = document.createElement('option');
-                    opt.value = key;
-                    opt.innerText = p.name;
-                    if(p.is_builtin) optGroupBuiltin.appendChild(opt);
-                    else optGroupUser.appendChild(opt);
-                }
-                select.appendChild(optGroupBuiltin);
-                select.appendChild(optGroupUser);
-            });
+    function toggleMode() {
+        const mode = document.getElementById('clockMode').value;
+        if(mode === 'BC') {
+            document.getElementById('ocPanel').style.display = 'none';
+            document.getElementById('bcPanel').style.display = 'block';
+        } else {
+            document.getElementById('ocPanel').style.display = 'block';
+            document.getElementById('bcPanel').style.display = 'none';
+        }
     }
 
-    function onProfileChange() {
-        const key = document.getElementById('profileSelect').value;
-        const p = cachedProfiles[key];
-        if(!p) return;
-
-        document.getElementById('domain').value = p.domain;
-        document.getElementById('priority1').value = p.priority1;
-        document.getElementById('priority2').value = p.priority2;
-        document.getElementById('logSyncInterval').value = p.logSyncInterval;
-        document.getElementById('logAnnounceInterval').value = p.logAnnounceInterval;
-        document.getElementById('logMinDelayReqInterval').value = p.logMinDelayReqInterval;
-        document.getElementById('announceReceiptTimeout').value = p.announceReceiptTimeout;
-    }
-
-    function saveProfile() {
-        const name = prompt("请输入新 Profile 的名称 (例如: My ST2110 Config):");
-        if(!name) return;
-
-        const config = {
-            domain: parseInt(document.getElementById('domain').value),
-            priority1: parseInt(document.getElementById('priority1').value),
-            priority2: parseInt(document.getElementById('priority2').value),
-            logSyncInterval: parseInt(document.getElementById('logSyncInterval').value),
-            logAnnounceInterval: parseInt(document.getElementById('logAnnounceInterval').value),
-            logMinDelayReqInterval: parseInt(document.getElementById('logMinDelayReqInterval').value),
-            announceReceiptTimeout: parseInt(document.getElementById('announceReceiptTimeout').value)
-        };
-
-        fetch('/api/profiles', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ name: name, config: config })
-        })
-        .then(r => r.json())
-        .then(res => {
-            if(res.status === 'success') {
-                alert("保存成功！");
-                loadProfiles();
-            } else {
-                alert("保存失败: " + res.message);
+    function fetchProfiles() {
+        fetch('/api/profiles').then(r=>r.json()).then(data => {
+            profiles = data;
+            const sel = document.getElementById('profileSelect');
+            sel.innerHTML = '<option disabled selected>-- Select --</option>';
+            for(let id in data) {
+                let opt = document.createElement('option');
+                opt.value = id;
+                opt.text = data[id].name + (data[id].is_builtin ? "*" : "");
+                sel.add(opt);
             }
         });
     }
 
-    function deleteProfile() {
-        const key = document.getElementById('profileSelect').value;
-        if(!key) { alert("请先选择一个 Profile"); return; }
-        
-        if(cachedProfiles[key].is_builtin) {
-            alert("无法删除系统内置 Profile！");
-            return;
-        }
-
-        if(confirm(`确定要删除 Profile "${cachedProfiles[key].name}" 吗？`)) {
-            fetch(`/api/profiles/${key}`, { method: 'DELETE' })
-            .then(r => r.json())
-            .then(res => {
-                if(res.status === 'success') {
-                    alert("删除成功");
-                    loadProfiles();
-                } else {
-                    alert("删除失败: " + res.message);
-                }
-            });
-        }
+    function loadProfileData() {
+        const pid = document.getElementById('profileSelect').value;
+        if(!profiles[pid]) return;
+        FIELDS.forEach(f => {
+            const el = document.getElementById(f);
+            if(el) el.value = profiles[pid][f] || 0;
+        });
     }
 
     function applyConfig() {
-        const data = {
-            interface: document.getElementById('interface').value,
-            domain: parseInt(document.getElementById('domain').value),
-            priority1: parseInt(document.getElementById('priority1').value),
-            priority2: parseInt(document.getElementById('priority2').value),
-            logSyncInterval: parseInt(document.getElementById('logSyncInterval').value),
-            logAnnounceInterval: parseInt(document.getElementById('logAnnounceInterval').value),
-            logMinDelayReqInterval: parseInt(document.getElementById('logMinDelayReqInterval').value),
-            announceReceiptTimeout: parseInt(document.getElementById('announceReceiptTimeout').value)
-        };
-
-        if(confirm("确定要应用当前参数并重启服务吗？")) {
-            fetch('/api/apply', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(data)
-            })
-            .then(r => r.json())
-            .then(res => {
-                if(res.status === 'success'){
-                    setTimeout(updateStatus, 1000);
-                } else {
-                    alert("Error: " + res.message);
-                }
-            });
+        const mode = document.getElementById('clockMode').value;
+        const data = { clockMode: mode };
+        
+        if (mode === 'BC') {
+            data.bcSlaveIf = document.getElementById('bcSlaveIf').value;
+            data.bcMasterIf = document.getElementById('bcMasterIf').value;
+            if(!data.bcSlaveIf || !data.bcMasterIf) { alert("Please select BOTH interfaces for BC mode"); return; }
+            if(data.bcSlaveIf === data.bcMasterIf) { alert("BC interfaces must be different!"); return; }
+        } else {
+            data.interface = document.getElementById('interface').value;
+            if(!data.interface) { alert("Select interface"); return; }
         }
+        
+        if(!confirm(`Apply configuration in ${mode} mode?`)) return;
+
+        FIELDS.forEach(f => {
+            const el = document.getElementById(f);
+            data[f] = el ? el.value : 0; 
+        });
+        
+        fetch('/api/apply', {
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(data)
+        }).then(r=>r.json()).then(res => {
+            if(res.status === 'success') alert("✅ Configuration Applied!");
+            else alert("❌ Failed: " + res.message);
+        });
     }
 
-    // --- 监控逻辑 ---
     function updateStatus() {
-        fetch('/api/status')
-            .then(r => r.json())
-            .then(data => {
-                const card = document.getElementById('statusCard');
-                const stateText = document.getElementById('serviceState');
-                const portText = document.getElementById('portState');
+        fetch('/api/status').then(r=>r.json()).then(d => {
+            const ptpCard = document.getElementById('ptpCard');
+            const ptpText = document.getElementById('ptpState');
+            
+            if(d.ptp4l === 'RUNNING') {
+                const state = d.port || "UNKNOWN";
+                ptpText.innerText = state;
+                document.getElementById('serviceStateDetail').innerText = "Running";
                 
-                if (data.port_state === "STOPPED") {
-                    card.className = 'status-box bg-stopped shadow-sm';
-                    stateText.innerText = "STOPPED";
-                    portText.innerText = "Offline";
-                } else {
-                    card.className = 'status-box bg-running shadow-sm';
-                    stateText.innerText = "RUNNING";
-                    portText.innerText = data.port_state || "Unknown";
-                }
+                if (state === 'SLAVE') ptpCard.className = 'status-box bg-slave shadow-sm';
+                else if (state === 'MASTER') ptpCard.className = 'status-box bg-master shadow-sm';
+                else if (state === 'UNCALIBRATED') ptpCard.className = 'status-box bg-init shadow-sm';
+                else ptpCard.className = 'status-box bg-running shadow-sm';
+            } else {
+                ptpCard.className = 'status-box bg-stopped shadow-sm';
+                ptpText.innerText = "STOPPED";
+                document.getElementById('serviceStateDetail').innerText = "Inactive";
+            }
 
-                document.getElementById('gmId').innerText = data.gm_identity || "N/A";
-                document.getElementById('offsetVal').innerText = (data.offset || "0") + " ns";
-            });
+            document.getElementById('offsetVal').innerText = d.offset;
+            document.getElementById('gmId').innerText = d.gm || "N/A";
+        }).catch(e => {});
     }
-
-    function updateLogs() {
-        fetch('/api/logs')
-            .then(r => r.json())
-            .then(data => {
-                const logWin = document.getElementById('logWindow');
-                const isScrolledToBottom = logWin.scrollHeight - logWin.clientHeight <= logWin.scrollTop + 50;
-                logWin.innerText = data.logs;
-                document.getElementById('logTime').innerText = new Date().toLocaleTimeString();
-                if(isScrolledToBottom) logWin.scrollTop = logWin.scrollHeight;
-            });
-    }
-
-    function stopService() {
-        if(confirm("确定要停止 PTP 服务吗？")) {
-            fetch('/api/stop', { method: 'POST' }).then(() => updateStatus());
-        }
-    }
+    
+    // 省略日志和保存逻辑，保持一致...
+    function updateLogs() { fetch('/api/logs').then(r=>r.json()).then(d => { const w=document.getElementById('logWindow'); if(w){ w.innerText=d.logs; w.scrollTop=w.scrollHeight; } }); }
+    function saveProfile() { let n=prompt("Name:"); if(n){ let c={}; FIELDS.forEach(f=>c[f]=document.getElementById(f).value); fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,config:c})}).then(()=>fetchProfiles()); } }
+    function stopService() { if(confirm("Stop?")) fetch('/api/stop',{method:'POST'}); }
 
     init();
 </script>
-
 </body>
 </html>
