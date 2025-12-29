@@ -1,4 +1,5 @@
-🎥 PTP4L Web Controller
+# 🎥 PTP4L Web Controller
+
 一个轻量级、可视化的 Linux PTP (Precision Time Protocol) 管理面板。专为广电 IP 化 (SMPTE ST 2110) 及高精度时间同步场景设计。
 
 Designed & Developed by Vega Sun
@@ -19,38 +20,39 @@ Designed & Developed by Vega Sun
 
 Bash
 
-# 下载并运行安装脚本
+## 下载并运行安装脚本
 curl -O https://raw.githubusercontent.com/SileNt525/ptp4l-web-controller/main/install.sh
 chmod +x install.sh
 sudo ./install.sh
 安装完成后，访问：http://<服务器IP>:8080
 
-🛠️ 手动安装
+# 🛠️ 手动安装
 如果你想手动部署或进行二次开发：
 
-安装依赖：
+## 安装依赖：
 
-Bash
-
-# Fedora/CentOS
+### Fedora/CentOS
 dnf install linuxptp ethtool python3
-# Debian/Ubuntu
+### Debian/Ubuntu
 apt install linuxptp ethtool python3 python3-venv
-克隆仓库：
 
-Bash
+## 克隆仓库：
 
 git clone https://github.com/SileNt525/ptp4l-web-controller.git
-cd ptp4l-web-controller
-运行：
 
-Bash
+cd ptp4l-web-controller
+
+## 运行：
 
 python3 -m venv .venv
+
 source .venv/bin/activate
+
 pip install -r requirements.txt
+
 python3 app.py
+
 (注意：手动运行需要 root 权限以控制 systemctl)
 
-📄 License
+# 📄 License
 本项目基于 MIT License 开源。
