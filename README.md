@@ -4,7 +4,8 @@
 
 Designed & Developed by Vega Sun
 
-✨ 功能特性
+# ✨ 功能特性
+
 📊 实时状态监控：直观显示 PTP 端口状态、Master Offset (偏差值)、Grandmaster ID。
 
 ⚙️ Profile 模板管理：内置 Default (IEEE 1588)、AES67、SMPTE ST 2059-2 预设，支持自定义保存/加载配置。
@@ -15,7 +16,7 @@ Designed & Developed by Vega Sun
 
 💻 跨发行版支持：完美支持 Fedora 43+, CentOS Stream 9, Ubuntu 22.04+, Debian 12+。
 
-🚀 快速开始 (Quick Start)
+# 🚀 快速开始 (Quick Start)
 你只需要在服务器上运行以下命令即可完成安装：
 
 Bash
