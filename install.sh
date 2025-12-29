@@ -113,7 +113,8 @@ def run_cmd_safe(cmd_list):
     try:
         result = subprocess.check_output(cmd_list, stderr=subprocess.STDOUT, timeout=1)
         return result.decode('utf-8', errors='ignore')
-    except: return ""
+    except:
+        return ""
 
 def get_pmc_dict():
     cmd = ["pmc", "-u", "-b", "0", "-d", "0", "GET PORT_DATA_SET", "GET PARENT_DATA_SET", "GET DEFAULT_DATA_SET", "GET CURRENT_DATA_SET"]
@@ -121,26 +122,38 @@ def get_pmc_dict():
     data = {}
     states = re.findall(r'portState\s+(\w+)', output)
     if states:
-        if 'SLAVE' in states: data['port_state'] = 'SLAVE'
-        elif 'UNCALIBRATED' in states: data['port_state'] = 'UNCALIBRATED'
-        elif all(s == 'MASTER' for s in states): data['port_state'] = 'MASTER'
-        else: data['port_state'] = states[0]
+        if 'SLAVE' in states: 
+            data['port_state'] = 'SLAVE'
+        elif 'UNCALIBRATED' in states: 
+            data['port_state'] = 'UNCALIBRATED'
+        elif all(s == 'MASTER' for s in states): 
+            data['port_state'] = 'MASTER'
+        else: 
+            data['port_state'] = states[0]
+            
     m = re.search(r'grandmasterIdentity\s+([0-9a-fA-F\.]+)', output)
     if m: data['gm_id'] = m.group(1)
+    
     m = re.search(r'clockIdentity\s+([0-9a-fA-F\.]+)', output)
     if m: data['clock_id'] = m.group(1)
+    
     m = re.search(r'offsetFromMaster\s+([0-9\.\-]+)', output)
     if m: data['offset'] = m.group(1)
+    
     return data
 
 def load_user_profiles():
     if os.path.exists(USER_PROFILES_FILE):
-        try: with open(USER_PROFILES_FILE, 'r') as f: return json.load(f)
-        except: return {}
+        try: 
+            with open(USER_PROFILES_FILE, 'r') as f: 
+                return json.load(f)
+        except: 
+            return {}
     return {}
 
 def save_user_profiles(p):
-    with open(USER_PROFILES_FILE, 'w') as f: json.dump(p, f, indent=4)
+    with open(USER_PROFILES_FILE, 'w') as f: 
+        json.dump(p, f, indent=4)
 
 def restart_ptp_async():
     def _restart():
@@ -149,14 +162,18 @@ def restart_ptp_async():
     threading.Thread(target=_restart).start()
 
 def safe_int(v, d=0):
-    try: return int(v)
-    except: return d
+    try: 
+        return int(v)
+    except: 
+        return d
 
 @app.route('/')
 def index():
     nics = []
-    try: nics = sorted([n for n in os.listdir('/sys/class/net/') if not n.startswith('lo')])
-    except: pass
+    try: 
+        nics = sorted([n for n in os.listdir('/sys/class/net/') if not n.startswith('lo')])
+    except: 
+        pass
     return render_template('index.html', nics=nics, hostname=socket.gethostname())
 
 @app.route('/api/profiles', methods=['GET', 'POST'])
@@ -164,27 +181,36 @@ def handle_profiles():
     if request.method == 'GET':
         u = load_user_profiles()
         c = {k: {**v, 'is_builtin': True, 'id': k} for k, v in BUILTIN_PROFILES.items()}
-        for k, v in u.items(): c[k] = {**v, 'is_builtin': False, 'id': k}
+        for k, v in u.items(): 
+            c[k] = {**v, 'is_builtin': False, 'id': k}
         return jsonify(c)
+    
     req = request.json
     name = req.get('name', 'Untitled')
     pid = "user_" + re.sub(r'\W+', '_', name).lower()
     p = load_user_profiles()
-    p[pid] = req['config']; p[pid]['name'] = name
+    p[pid] = req['config']
+    p[pid]['name'] = name
     save_user_profiles(p)
     return jsonify({"status": "success", "id": pid})
 
 @app.route('/api/profiles/<pid>', methods=['DELETE'])
 def delete_profile(pid):
     p = load_user_profiles()
-    if pid in p: del p[pid]; save_user_profiles(p); return jsonify({"status": "success"})
+    if pid in p: 
+        del p[pid]
+        save_user_profiles(p)
+        return jsonify({"status": "success"})
     return jsonify({"status": "error"}), 404
 
 @app.route('/api/apply', methods=['POST'])
 def apply_config():
     req = request.json
     mode = req.get('clockMode', 'OC')
-    if os.path.exists(CONFIG_FILE): shutil.copy(CONFIG_FILE, CONFIG_FILE + ".bak")
+    
+    if os.path.exists(CONFIG_FILE): 
+        shutil.copy(CONFIG_FILE, CONFIG_FILE + ".bak")
+        
     try:
         cfg = f"[global]\nnetwork_transport UDPv4\ntime_stamping hardware\ndelay_mechanism E2E\n"
         cfg += f"domainNumber {safe_int(req.get('domain'))}\npriority1 {safe_int(req.get('priority1'),128)}\n"
@@ -192,39 +218,55 @@ def apply_config():
         cfg += f"logSyncInterval {safe_int(req.get('logSyncInterval'))}\nlogMinDelayReqInterval {safe_int(req.get('logMinDelayReqInterval'))}\n"
         cfg += f"announceReceiptTimeout {safe_int(req.get('announceReceiptTimeout'),3)}\n"
         cfg += f"logging_level 6\nuse_syslog 1\nverbose 1\n"
-        if mode == 'BC': cfg += "boundary_clock_jbod 1\n\n"
-        else: cfg += "\n"
+        
+        if mode == 'BC': 
+            cfg += "boundary_clock_jbod 1\n\n"
+        else: 
+            cfg += "\n"
 
         if mode == 'BC':
             s, m = req.get('bcSlaveIf'), req.get('bcMasterIf')
-            if not s or not m: return jsonify({"status":"error", "message":"BC needs 2 interfaces"}), 400
+            if not s or not m: 
+                return jsonify({"status":"error", "message":"BC needs 2 interfaces"}), 400
             cfg += f"[{s}]\n\n[{m}]\nmasterOnly 1\n"
         else:
             i = req.get('interface')
-            if not i: return jsonify({"status":"error", "message":"Interface missing"}), 400
+            if not i: 
+                return jsonify({"status":"error", "message":"Interface missing"}), 400
             cfg += f"[{i}]\n"
             
-        with open(CONFIG_FILE, 'w') as f: f.write(cfg)
+        with open(CONFIG_FILE, 'w') as f: 
+            f.write(cfg)
+            
         restart_ptp_async()
         return jsonify({"status": "success"})
-    except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as e: 
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/status')
 def get_status():
     d = {"ptp4l":"STOPPED","port":"Offline","offset":"0","gm":"Scanning...","is_self":False}
-    if run_cmd_safe(["pgrep","-x","ptp4l"]): d["ptp4l"]="RUNNING"
+    if run_cmd_safe(["pgrep","-x","ptp4l"]): 
+        d["ptp4l"]="RUNNING"
+        
     if d["ptp4l"]=="RUNNING":
         p = get_pmc_dict()
         if 'port_state' in p: d["port"]=p['port_state']
         if 'offset' in p: d["offset"]=p['offset']
         if 'gm_id' in p:
             d["gm"]=p['gm_id']
-            if 'clock_id' in p and p['gm_id']==p['clock_id']: d["is_self"]=True; d["gm"]+=" (Self)"
-        if d["port"] in ["MASTER","GRAND_MASTER"]: d["offset"]="0"; d["is_self"]=True
+            if 'clock_id' in p and p['gm_id']==p['clock_id']: 
+                d["is_self"]=True
+                d["gm"]+=" (Self)"
+        if d["port"] in ["MASTER","GRAND_MASTER"]: 
+            d["offset"]="0"
+            d["is_self"]=True
+            
     return jsonify(d)
 
 @app.route('/api/logs')
-def get_logs(): return jsonify({"logs": run_cmd_safe(["journalctl","-u","ptp4l","-n","50","--no-pager","--output","cat"])})
+def get_logs(): 
+    return jsonify({"logs": run_cmd_safe(["journalctl","-u","ptp4l","-n","50","--no-pager","--output","cat"])})
 
 @app.route('/api/stop', methods=['POST'])
 def stop_service():
