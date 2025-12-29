@@ -18,10 +18,11 @@
 <body class="bg-light">
 <div class="container-fluid p-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h3 class="mb-0">⏱️ PTP4L Controller <small class="text-muted fs-6">v3.1 (BC Support) by Vega Sun</small></h3>
+        <h3 class="mb-0">⏱️ PTP4L Controller <small class="text-muted fs-6">v3.1 (BC Support)</small></h3>
         <span class="badge bg-secondary">{{ hostname }}</span>
     </div>
 
+    <!-- Status Panel -->
     <div class="row g-3 mb-3">
         <div class="col-md-4">
             <div id="ptpCard" class="status-box bg-stopped shadow-sm">
@@ -45,49 +46,60 @@
         </div>
     </div>
 
+    <!-- Controls -->
     <div class="row g-3">
         <div class="col-lg-4">
             <div class="card shadow-sm">
                 <div class="card-header fw-bold">⚙️ Configuration</div>
                 <div class="card-body">
                     <form id="configForm">
+                        <!-- Mode Selection -->
                         <div class="mb-3">
-                            <label class="form-label fw-bold">Device Mode</label>
+                            <label class="form-label fw-bold small text-uppercase text-secondary">Clock Mode</label>
                             <select class="form-select" id="clockMode" onchange="toggleMode()">
-                                <option value="OC" selected>Ordinary Clock (单口终端)</option>
-                                <option value="BC">Boundary Clock (双口转发)</option>
+                                <option value="OC" selected>Ordinary Clock (Single Port)</option>
+                                <option value="BC">Boundary Clock (Dual Port)</option>
                             </select>
                         </div>
 
+                        <!-- OC Panel -->
                         <div id="ocPanel" class="mb-3">
                             <label class="small text-muted">Network Interface</label>
                             <select class="form-select" id="interface">
-                                {% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}
+                                <option value="" disabled selected>-- Select --</option>
+                                {% for nic in nics %}
+                                <option value="{{ nic }}">{{ nic }}</option>
+                                {% endfor %}
                             </select>
                         </div>
 
-                        <div id="bcPanel" class="mb-3 border p-2 rounded bg-light" style="display:none;">
-                            <label class="small fw-bold text-primary mb-2">Boundary Clock Settings</label>
+                        <!-- BC Panel -->
+                        <div id="bcPanel" class="mb-3 border p-2 rounded bg-white" style="display:none;">
+                            <label class="small fw-bold text-primary mb-2 d-block">Boundary Clock Topology</label>
                             
                             <div class="mb-2">
-                                <label class="small text-muted">⬇️ Upstream (接收来自 GM)</label>
+                                <label class="small text-muted">⬇️ Upstream (Slave/In)</label>
                                 <select class="form-select form-select-sm" id="bcSlaveIf">
-                                    <option value="" disabled selected>Select In-Port...</option>
-                                    {% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}
+                                    <option value="" disabled selected>-- Select --</option>
+                                    {% for nic in nics %}
+                                    <option value="{{ nic }}">{{ nic }}</option>
+                                    {% endfor %}
                                 </select>
                             </div>
                             
                             <div class="mb-2">
-                                <label class="small text-muted">⬆️ Downstream (转发给从站)</label>
+                                <label class="small text-muted">⬆️ Downstream (Master/Out)</label>
                                 <select class="form-select form-select-sm" id="bcMasterIf">
-                                    <option value="" disabled selected>Select Out-Port...</option>
-                                    {% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}
+                                    <option value="" disabled selected>-- Select --</option>
+                                    {% for nic in nics %}
+                                    <option value="{{ nic }}">{{ nic }}</option>
+                                    {% endfor %}
                                 </select>
                             </div>
-                            <div class="form-text text-danger" style="font-size:0.75rem" id="bcWarn"></div>
                         </div>
 
                         <hr>
+                        <!-- Parameters -->
                         <div class="mb-2">
                             <label class="small text-muted">Profile</label>
                             <div class="input-group input-group-sm">
@@ -156,6 +168,7 @@
         fetch('/api/profiles').then(r=>r.json()).then(data => {
             profiles = data;
             const sel = document.getElementById('profileSelect');
+            const currentVal = sel.value;
             sel.innerHTML = '<option disabled selected>-- Select --</option>';
             for(let id in data) {
                 let opt = document.createElement('option');
@@ -163,6 +176,7 @@
                 opt.text = data[id].name + (data[id].is_builtin ? "*" : "");
                 sel.add(opt);
             }
+            if(currentVal && profiles[currentVal]) sel.value = currentVal;
         });
     }
 
@@ -182,14 +196,14 @@
         if (mode === 'BC') {
             data.bcSlaveIf = document.getElementById('bcSlaveIf').value;
             data.bcMasterIf = document.getElementById('bcMasterIf').value;
-            if(!data.bcSlaveIf || !data.bcMasterIf) { alert("Please select BOTH interfaces for BC mode"); return; }
-            if(data.bcSlaveIf === data.bcMasterIf) { alert("BC interfaces must be different!"); return; }
+            if(!data.bcSlaveIf || !data.bcMasterIf) { alert("BC Mode: Please select BOTH interfaces."); return; }
+            if(data.bcSlaveIf === data.bcMasterIf) { alert("BC Mode: Interfaces must be different!"); return; }
         } else {
             data.interface = document.getElementById('interface').value;
-            if(!data.interface) { alert("Select interface"); return; }
+            if(!data.interface) { alert("OC Mode: Please select an interface."); return; }
         }
         
-        if(!confirm(`Apply configuration in ${mode} mode?`)) return;
+        if(!confirm(`Apply configuration in [${mode}] mode?`)) return;
 
         FIELDS.forEach(f => {
             const el = document.getElementById(f);
@@ -201,9 +215,9 @@
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(data)
         }).then(r=>r.json()).then(res => {
-            if(res.status === 'success') alert("✅ Configuration Applied!");
+            if(res.status === 'success') alert("✅ Configuration Applied! Services restarting...");
             else alert("❌ Failed: " + res.message);
-        });
+        }).catch(err => alert("Connection Error: " + err));
     }
 
     function updateStatus() {
@@ -216,9 +230,10 @@
                 ptpText.innerText = state;
                 document.getElementById('serviceStateDetail').innerText = "Running";
                 
+                // Colors
                 if (state === 'SLAVE') ptpCard.className = 'status-box bg-slave shadow-sm';
-                else if (state === 'MASTER') ptpCard.className = 'status-box bg-master shadow-sm';
-                else if (state === 'UNCALIBRATED') ptpCard.className = 'status-box bg-init shadow-sm';
+                else if (state === 'MASTER' || state === 'GRAND_MASTER') ptpCard.className = 'status-box bg-master shadow-sm';
+                else if (state === 'UNCALIBRATED' || state === 'LISTENING') ptpCard.className = 'status-box bg-init shadow-sm';
                 else ptpCard.className = 'status-box bg-running shadow-sm';
             } else {
                 ptpCard.className = 'status-box bg-stopped shadow-sm';
@@ -228,13 +243,32 @@
 
             document.getElementById('offsetVal').innerText = d.offset;
             document.getElementById('gmId').innerText = d.gm || "N/A";
-        }).catch(e => {});
+        }).catch(e => {}); // Silent catch for polling
+    }
+
+    function updateLogs() { 
+        fetch('/api/logs').then(r=>r.json()).then(d => { 
+            const w=document.getElementById('logWindow'); 
+            if(w){ 
+                w.innerText=d.logs; 
+                document.getElementById('logTime').innerText = new Date().toLocaleTimeString();
+                w.scrollTop=w.scrollHeight; 
+            } 
+        }).catch(e => {}); 
+    }
+
+    function saveProfile() { 
+        let n=prompt("Profile Name:"); 
+        if(n){ 
+            let c={}; 
+            FIELDS.forEach(f=>c[f]=document.getElementById(f).value); 
+            fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,config:c})}).then(()=>fetchProfiles()); 
+        } 
     }
     
-    // 省略日志和保存逻辑，保持一致...
-    function updateLogs() { fetch('/api/logs').then(r=>r.json()).then(d => { const w=document.getElementById('logWindow'); if(w){ w.innerText=d.logs; w.scrollTop=w.scrollHeight; } }); }
-    function saveProfile() { let n=prompt("Name:"); if(n){ let c={}; FIELDS.forEach(f=>c[f]=document.getElementById(f).value); fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,config:c})}).then(()=>fetchProfiles()); } }
-    function stopService() { if(confirm("Stop?")) fetch('/api/stop',{method:'POST'}); }
+    function stopService() { 
+        if(confirm("Stop PTP Service?")) fetch('/api/stop',{method:'POST'}); 
+    }
 
     init();
 </script>
