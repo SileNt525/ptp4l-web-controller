@@ -53,7 +53,7 @@ Fedora43 Server，2 x Intel I226-V网卡
 
     curl -O https://raw.githubusercontent.com/SileNt525/ptp4l-web-controller/main/install.sh
     chmod +x install.sh
-    sudo ./install.sh
+    bash ./install.sh
 
 安装完成后，访问：http://<服务器IP>:8080
 
