@@ -4,6 +4,12 @@
 
 Designed & Developed by Vega Sun
 
+## 测试环境
+
+Fedora43 Server，2 x Intel I226-V网卡
+
+请确认网卡支持硬件PTP，可通过Ethtool -T 网卡名来确认
+
 # ✨ 功能特性
 
 📊 实时状态监控：直观显示 PTP 端口状态、Master Offset (偏差值)、Grandmaster ID。
