@@ -2,8 +2,11 @@
 set -e
 
 # ================================================================
-#   PTP4L Web Controller Installer (v3.10 Expert Edition)
-#   Updates: Integrated new UI with Charts & Safe Phc2Sys Logic
+#   PTP4L Web Controller Installer (v3.13 Expert Edition)
+#   Updates: 
+#     - UI: Richer Color Status for PTP States (Orange/Grey added)
+#     - Logic: Sync Mode Selector (None/Slave/Master)
+#     - Fix: Log Level & Firewall Rules
 #   Target: Fresh Linux Install (CentOS/RHEL/Ubuntu/Debian)
 #   User: Root Only
 # ================================================================
@@ -14,19 +17,17 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-echo "🚀 开始全自动部署 PTP4L Web Controller (v3.10 Expert)..."
+echo "🚀 开始全自动部署 PTP4L Web Controller (v3.13 Expert)..."
 
-# --- 2. 紧急时间校准 (SSL 修复) ---
-# 全新系统时间经常不准，这会导致 pip 安装时的 SSL 证书错误
+# --- 2. 紧急时间校准 ---
 echo "[1/9] 检查并校准系统时间..."
 if command -v curl &> /dev/null; then
-    # 尝试从百度抓取 HTTP 头时间 (无需 SSL 握手)
     NET_TIME=$(curl -I --insecure http://www.baidu.com 2>/dev/null | grep ^Date: | sed 's/Date: //g')
     if [ -n "$NET_TIME" ]; then
         date -s "$NET_TIME" >/dev/null
         echo "   ✅ 时间已校准为: $(date)"
     else
-        echo "   ⚠️ 无法获取网络时间，跳过校准 (请确保时间大致正确)"
+        echo "   ⚠️ 无法获取网络时间，跳过校准"
     fi
 else
     echo "   ⚠️ 未找到 curl，跳过时间校准"
@@ -36,7 +37,6 @@ fi
 echo "[2/9] 清理旧服务..."
 systemctl stop ptp-web ptp4l phc2sys phc2sys-custom 2>/dev/null || true
 systemctl disable phc2sys phc2sys-custom 2>/dev/null || true
-# 清理旧的 service 文件，防止冲突
 rm -f /etc/systemd/system/phc2sys.service
 rm -f /etc/systemd/system/phc2sys-custom.service
 rm -f /usr/local/bin/ptp-safe-wrapper.sh
@@ -48,29 +48,21 @@ if [ -f /etc/os-release ]; then . /etc/os-release; OS=$ID; else OS="unknown"; fi
 COMMON_PKGS="linuxptp ethtool python3"
 
 if [[ "$OS" =~ (fedora|rhel|centos|rocky|almalinux) ]]; then
-    # RHEL 系
-    echo "   检测到 RHEL/CentOS 系系统..."
-    # RHEL 8/9 有时 python3 自带 pip，有时需要 python3-pip
     dnf install -y $COMMON_PKGS python3-pip curl
 elif [[ "$OS" =~ (debian|ubuntu|kali|linuxmint) ]]; then
-    # Debian 系 (强烈建议安装 venv 以避免系统包冲突)
-    echo "   检测到 Debian/Ubuntu 系系统..."
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y $COMMON_PKGS python3-venv python3-pip curl
-else
-    echo "⚠️ 未知系统 ($OS)，尝试按通用方式继续..."
 fi
 
 # --- 5. 初始化目录 ---
 echo "[4/9] 建立目录结构..."
 INSTALL_DIR="/opt/ptp-web"
-# 确保目录存在且干净
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/templates"
 mkdir -p /etc/linuxptp
 
-# --- 6. 写入核心文件 (Embed) ---
+# --- 6. 写入核心文件 ---
 echo "[5/9] 释放核心代码..."
 
 # 6.1 Requirements
@@ -86,8 +78,7 @@ packaging==25.0
 Werkzeug==3.1.4
 EOF
 
-# 6.2 APP.PY (Updated v3.10 Logic)
-# 注意：使用 'EOF' 防止 shell 变量扩展，保护 Python 代码完整性
+# 6.2 APP.PY
 cat << 'EOF' > "$INSTALL_DIR/app.py"
 import os
 import subprocess
@@ -106,19 +97,17 @@ app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = "/etc/linuxptp/ptp4l.conf"
 PHC2SYS_SERVICE_FILE = "/etc/systemd/system/phc2sys-custom.service"
-# Fix: Ensure this path is valid, we will auto-create the dir if missing
 SAFE_WRAPPER_SCRIPT = "/usr/local/bin/ptp-safe-wrapper.sh"
 USER_PROFILES_FILE = os.path.join(BASE_DIR, "user_profiles.json")
 
 # --- Built-in Profiles ---
 BUILTIN_PROFILES = {
-    "default": { "name": "Default (IEEE 1588)", "timeStamping": "hardware", "domain": 0, "priority1": 128, "priority2": 128, "logAnnounceInterval": 1, "logSyncInterval": 0, "logMinDelayReqInterval": 0, "announceReceiptTimeout": 3, "syncSystem": False, "logLevel": 6 },
-    "aes67": { "name": "AES67 (Media)", "timeStamping": "hardware", "domain": 0, "priority1": 128, "priority2": 128, "logAnnounceInterval": 1, "logSyncInterval": -3, "logMinDelayReqInterval": 0, "announceReceiptTimeout": 3, "syncSystem": True, "logLevel": 6 },
-    "st2059": { "name": "SMPTE ST 2059-2 (Broadcast)", "timeStamping": "hardware", "domain": 127, "priority1": 128, "priority2": 128, "logAnnounceInterval": -2, "logSyncInterval": -3, "logMinDelayReqInterval": -2, "announceReceiptTimeout": 3, "syncSystem": True, "logLevel": 6 }
+    "default": { "name": "Default (IEEE 1588)", "timeStamping": "hardware", "domain": 0, "priority1": 128, "priority2": 128, "logAnnounceInterval": 1, "logSyncInterval": 0, "logMinDelayReqInterval": 0, "announceReceiptTimeout": 3, "syncMode": "none", "logLevel": 6 },
+    "aes67": { "name": "AES67 (Media)", "timeStamping": "hardware", "domain": 0, "priority1": 128, "priority2": 128, "logAnnounceInterval": 1, "logSyncInterval": -3, "logMinDelayReqInterval": 0, "announceReceiptTimeout": 3, "syncMode": "slave", "logLevel": 6 },
+    "st2059": { "name": "SMPTE ST 2059-2 (Broadcast)", "timeStamping": "hardware", "domain": 127, "priority1": 128, "priority2": 128, "logAnnounceInterval": -2, "logSyncInterval": -3, "logMinDelayReqInterval": -2, "announceReceiptTimeout": 3, "syncMode": "slave", "logLevel": 6 }
 }
 
 def run_cmd_safe(cmd_list):
-    """Execute command safely without shell injection risk."""
     try:
         env = os.environ.copy()
         env['LANG'] = 'C'
@@ -128,12 +117,10 @@ def run_cmd_safe(cmd_list):
         return ""
 
 def get_current_interface():
-    """Extract active interface from config file."""
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r') as f:
                 for line in f:
-                    # Match [eth0] but exclude [global]
                     m = re.match(r'^\[([^\]]+)\]', line.strip())
                     if m and m.group(1) != 'global':
                         return m.group(1)
@@ -141,20 +128,12 @@ def get_current_interface():
     return None
 
 def get_ptp_time(interface):
-    """Directly query the PTP Hardware Clock time."""
     if not interface: return None
     try:
-        # 1. Get PTP Device ID (e.g. 0 for /dev/ptp0)
-        # Add /usr/sbin to path just in case
         ethtool_out = run_cmd_safe(["ethtool", "-T", interface])
-        
-        # FIX: Regex updated to support both old "PTP Hardware Clock" and new "Hardware timestamp provider index"
         m = re.search(r'(?:PTP Hardware Clock|Hardware timestamp provider index):\s+(\d+)', ethtool_out)
-        
         if not m: return None
         ptp_dev = f"/dev/ptp{m.group(1)}"
-        
-        # 2. Get Time using phc_ctl
         out = run_cmd_safe(["phc_ctl", ptp_dev, "get"])
         m_ts = re.search(r'clock time is (\d+)\.', out)
         if m_ts:
@@ -164,30 +143,18 @@ def get_ptp_time(interface):
     return None
 
 def get_pmc_dict():
-    """Revised Expert-level PTP status query."""
     cmd = ["pmc", "-u", "-b", "0", "-d", "0", 
            "GET CURRENT_DATA_SET", 
            "GET PORT_DATA_SET", 
            "GET TIME_STATUS_NP",
            "GET PARENT_DATA_SET"]
-    
     output = run_cmd_safe(cmd)
-    
-    data = {
-        "port_state": "UNKNOWN",
-        "offset": 0,
-        "path_delay": 0,
-        "steps_removed": -1,
-        "gm_id": "Unknown",
-        "gm_present": False,
-        "clock_id": "",
-        "phc2sys_state": "STOPPED"
-    }
+    data = { "port_state": "UNKNOWN", "offset": 0, "path_delay": 0, "steps_removed": -1, "gm_id": "Unknown", "gm_present": False, "clock_id": "", "phc2sys_state": "STOPPED" }
 
     m_delay = re.search(r'meanPathDelay\s+([\d\.\-eE]+)', output)
     if m_delay:
         try: data['path_delay'] = float(m_delay.group(1))
-        except: data['path_delay'] = 0
+        except: pass
 
     m_steps = re.search(r'stepsRemoved\s+(\d+)', output)
     if m_steps:
@@ -197,7 +164,7 @@ def get_pmc_dict():
     m_off = re.search(r'offsetFromMaster\s+([\d\.\-eE]+)', output)
     if m_off:
         try: data['offset'] = float(m_off.group(1))
-        except: data['offset'] = 0
+        except: pass
 
     m_gm = re.search(r'grandmasterIdentity\s+([0-9a-fA-F\.]+)', output)
     if m_gm: data['gm_id'] = m_gm.group(1)
@@ -214,12 +181,7 @@ def get_pmc_dict():
         elif all(s == 'LISTENING' for s in states): data['port_state'] = 'LISTENING'
         else: data['port_state'] = states[0]
 
-    m_gmp = re.search(r'gmPresent\s+(\w+)', output)
-    if m_gmp: data['gm_present'] = (m_gmp.group(1).lower() == 'true')
-
-    if run_cmd_safe(["pgrep", "-f", "phc2sys"]):
-        data["phc2sys_state"] = "RUNNING"
-
+    if run_cmd_safe(["pgrep", "-f", "phc2sys"]): data["phc2sys_state"] = "RUNNING"
     return data
 
 def load_user_profiles():
@@ -233,75 +195,43 @@ def save_user_profiles(profiles):
     with open(USER_PROFILES_FILE, 'w') as f:
         json.dump(profiles, f, indent=4)
 
-def create_safe_wrapper_script():
-    """Create a wrapper script that checks year > 2023 before syncing."""
-    
-    # 1. Fix: Ensure directory exists
+def create_safe_wrapper_script(sync_mode, log_level):
     script_dir = os.path.dirname(SAFE_WRAPPER_SCRIPT)
     if not os.path.exists(script_dir):
-        try:
-            os.makedirs(script_dir, exist_ok=True)
-        except:
-            pass 
+        try: os.makedirs(script_dir, exist_ok=True)
+        except: pass 
 
-    # 2. Fix: Use standard escaping for backslashes to avoid SyntaxWarning
-    # In Python strings, backslashes for regex/shell must be doubled: \\
-    # Example: To output '\(' in shell, we write '\\(' in Python string.
-    
-    script_content = f"""#!/bin/bash
+    content = """#!/bin/bash
 export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
-
 INTERFACE=$1
-shift
-ARGS="$@"
-
-# --- 1. Robust PTP Device Discovery ---
-# Works for "PTP Hardware Clock: 0" and "Hardware timestamp provider index: 0"
-# We use grep to find the line, then sed to strip everything before the colon and space.
-PTP_DEV_ID=$(ethtool -T $INTERFACE 2>/dev/null | grep -E "(Clock|index):" | sed 's/.*: //')
-
-if [ -z "$PTP_DEV_ID" ]; then
-    echo "❌ Error: No PTP hardware clock found for $INTERFACE"
-    echo "--- Debug: ethtool output ---"
-    ethtool -T $INTERFACE
-    exit 1
-fi
-
-PTP_DEV="/dev/ptp$PTP_DEV_ID"
-
-if [ ! -e "$PTP_DEV" ]; then
-    echo "❌ Error: Device node $PTP_DEV does not exist!"
-    exit 1
-fi
-
-# --- 2. Sanity Check (Year > 2023) ---
-# Get seconds from PTP clock using phc_ctl
-# FIX: All backslashes below are doubled for Python syntax safety
-PTP_SECONDS=$(phc_ctl $PTP_DEV get 2>/dev/null | sed -n 's/.*clock time is \\([0-9]\\+\\)\\..*/\\1/p')
-
-# Threshold: 1700000000 (Year ~2023)
-if [ -z "$PTP_SECONDS" ] || [ "$PTP_SECONDS" -lt 1700000000 ]; then
-    echo "⚠️ DANGER: PTP time on $INTERFACE is < Year 2023."
-    echo "    Aborting system clock sync to protect SSL/TLS state."
-    exit 1
-fi
-
-echo "✅ PTP time is valid (>2023). Device: $PTP_DEV. Starting phc2sys..."
-exec /usr/sbin/phc2sys -s $INTERFACE -c CLOCK_REALTIME -w -O 0
 """
-    with open(SAFE_WRAPPER_SCRIPT, 'w') as f:
-        f.write(script_content)
+    if sync_mode == 'master':
+        content += f"""
+echo "⚙️ Master Mode detected (SYS -> PHC)."
+exec /usr/sbin/phc2sys -s CLOCK_REALTIME -c $INTERFACE -O 0 -l {log_level}
+"""
+    else:
+        content += f"""
+PTP_DEV_ID=$(ethtool -T $INTERFACE 2>/dev/null | grep -E "(Clock|index):" | sed 's/.*: //')
+if [ -z "$PTP_DEV_ID" ]; then exit 1; fi
+PTP_DEV="/dev/ptp$PTP_DEV_ID"
+PTP_SECONDS=$(phc_ctl $PTP_DEV get 2>/dev/null | sed -n 's/.*clock time is \\([0-9]\\+\\)\\..*/\\1/p')
+if [ -z "$PTP_SECONDS" ] || [ "$PTP_SECONDS" -lt 1700000000 ]; then
+    echo "⚠️ DANGER: PTP time < 2023. Aborting."
+    exit 1
+fi
+echo "✅ PTP time valid. Syncing System..."
+exec /usr/sbin/phc2sys -s $INTERFACE -c CLOCK_REALTIME -w -O 0 -l {log_level}
+"""
+    with open(SAFE_WRAPPER_SCRIPT, 'w') as f: f.write(content)
     os.chmod(SAFE_WRAPPER_SCRIPT, 0o755)
 
-def create_phc2sys_service(interface, mode):
-    """Create systemd service using the safe wrapper."""
-    create_safe_wrapper_script()
-    
+def create_phc2sys_service(interface, sync_mode, log_level):
+    create_safe_wrapper_script(sync_mode, log_level)
     service_content = f"""[Unit]
 Description=Safe System Clock Sync (phc2sys)
 After=ptp4l.service
 Requires=ptp4l.service
-
 [Service]
 Type=simple
 ExecStart={SAFE_WRAPPER_SCRIPT} {interface}
@@ -309,13 +239,10 @@ Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-
 [Install]
 WantedBy=multi-user.target
 """
-    with open(PHC2SYS_SERVICE_FILE, 'w') as f:
-        f.write(service_content)
-    
+    with open(PHC2SYS_SERVICE_FILE, 'w') as f: f.write(service_content)
     subprocess.run(["systemctl", "daemon-reload"], check=False)
 
 def restart_services_async(enable_phc2sys):
@@ -353,7 +280,6 @@ def handle_profiles():
         for k, v in user_profiles.items():
             combined[k] = {**v, 'is_builtin': False, 'id': k}
         return jsonify(combined)
-    
     req = request.json
     name = req.get('name', 'Untitled')
     pid = "user_" + re.sub(r'\W+', '_', name).lower()
@@ -377,9 +303,12 @@ def apply_config():
     req = request.json
     mode = req.get('clockMode', 'OC')
     ts_mode = req.get('timeStamping', 'hardware')
-    sync_system = req.get('syncSystem', False)
-    log_level = safe_int(req.get('logLevel'), 6)
+    sync_mode = req.get('syncMode')
+    if sync_mode is None:
+        if req.get('syncSystem') is True: sync_mode = 'slave'
+        else: sync_mode = 'none'
 
+    log_level = safe_int(req.get('logLevel'), 6)
     if ts_mode not in ['hardware', 'software', 'legacy', 'onestep']: ts_mode = 'hardware'
     if os.path.exists(CONFIG_FILE): shutil.copy(CONFIG_FILE, CONFIG_FILE + ".bak")
     
@@ -417,37 +346,24 @@ verbose                 1
 
         with open(CONFIG_FILE, 'w') as f: f.write(cfg)
 
-        if sync_system and target_if:
-            create_phc2sys_service(target_if, mode)
+        should_enable_phc = (sync_mode != 'none' and target_if)
+        if should_enable_phc:
+            create_phc2sys_service(target_if, sync_mode, log_level)
 
-        restart_services_async(sync_system)
-        
+        restart_services_async(should_enable_phc)
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/status')
 def get_status():
-    data = { 
-        "ptp4l": "STOPPED", 
-        "phc2sys": "STOPPED",
-        "port": "Offline", 
-        "offset": 0, 
-        "path_delay": 0,
-        "steps_removed": -1,
-        "gm": "Scanning...", 
-        "ptp_time": "--",
-        "is_self": False 
-    }
-    
+    data = { "ptp4l": "STOPPED", "phc2sys": "STOPPED", "port": "Offline", "offset": 0, "path_delay": 0, "steps_removed": -1, "gm": "Scanning...", "ptp_time": "--", "is_self": False }
     iface = get_current_interface()
     if iface:
         t = get_ptp_time(iface)
         if t: data["ptp_time"] = t
-
     if run_cmd_safe(["pgrep", "-x", "ptp4l"]):
         data["ptp4l"] = "RUNNING"
-        
     if data["ptp4l"] == "RUNNING":
         pmc = get_pmc_dict()
         if 'port_state' in pmc: data["port"] = pmc['port_state']
@@ -455,19 +371,16 @@ def get_status():
         if 'path_delay' in pmc: data["path_delay"] = pmc['path_delay']
         if 'steps_removed' in pmc: data["steps_removed"] = pmc['steps_removed']
         if 'phc2sys_state' in pmc: data["phc2sys"] = pmc['phc2sys_state']
-        
         if 'gm_id' in pmc:
             data["gm"] = pmc['gm_id']
             if 'clock_id' in pmc and pmc['gm_id'] == pmc['clock_id']:
                 data["is_self"] = True
                 data["gm"] += " (Self)"
-        
         if data["port"] in ["MASTER", "GRAND_MASTER"]:
             data["offset"] = 0
             data["path_delay"] = 0
             data["steps_removed"] = 0
             data["is_self"] = True
-    
     return jsonify(data)
 
 @app.route('/api/logs')
@@ -484,14 +397,14 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
 EOF
 
-# 6.3 INDEX.HTML (Updated v3.10 UI)
+# 6.3 INDEX.HTML (Updated v3.13 with Richer Colors)
 cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PTP Controller v3.10 Expert by Vega Sun</title>
+    <title>PTP Controller v3.13 Expert by Vega Sun</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -500,19 +413,19 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
         .bg-stopped { background-color: #dc3545; }
         .bg-slave { background-color: #0d6efd; }
         .bg-master { background-color: #6610f2; }
-        .bg-init { background-color: #ffc107; color: black; }
+        .bg-syncing { background-color: #fd7e14; }
+        .bg-passive { background-color: #6c757d; }
         #logWindow { background-color: #212529; color: #0f0; height: 350px; overflow-y: auto; padding: 10px; font-family: monospace; font-size: 0.8rem; }
         .metric-label { font-size: 0.75rem; text-transform: uppercase; color: #6c757d; font-weight: bold; }
         .metric-value { font-size: 1.5rem; font-weight: bold; }
         .chart-container { position: relative; height: 250px; width: 100%; }
-        /* New PTP Time style */
         .ptp-time-display { background: rgba(0,0,0,0.2); padding: 5px; border-radius: 4px; margin-top: 10px; font-family: monospace; font-size: 0.9rem; text-align: center;}
     </style>
 </head>
 <body class="bg-light">
 <div class="container-fluid p-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun<small class="text-muted fs-6">v3.10 Expert</small></h3>
+        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun<small class="text-muted fs-6">v3.13 Expert</small></h3>
         <span class="badge bg-secondary">{{ hostname }}</span>
     </div>
     
@@ -521,7 +434,7 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
             <div id="ptpCard" class="status-box bg-stopped shadow-sm">
                 <div class="d-flex justify-content-between">
                     <small>PTP4L State</small>
-                    <span id="phcBadge" class="badge bg-dark border border-secondary" style="opacity: 0.3">SYS CLK</span>
+                    <span id="phcBadge" class="badge bg-dark border border-secondary" style="opacity: 0.3">SYNC OFF</span>
                 </div>
                 <div id="ptpState" class="h3 mb-0">STOPPED</div>
                 <small id="serviceStateDetail" class="opacity-75">Service Inactive</small>
@@ -614,17 +527,20 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
                         </div>
                         
                         <div class="row g-2 mb-3 bg-light p-2 rounded border mx-0">
-                            <div class="col-7">
-                                <div class="form-check form-switch mt-1">
-                                    <input class="form-check-input" type="checkbox" id="syncSystem">
-                                    <label class="form-check-label small fw-bold" for="syncSystem">Sync System Clock</label>
-                                </div>
+                            <div class="col-8">
+                                <label class="small fw-bold text-muted">Clock Sync</label>
+                                <select class="form-select form-select-sm" id="syncMode">
+                                    <option value="none">None (Disabled)</option>
+                                    <option value="slave" selected>Follow PTP (Slave: PHC ➔ SYS)</option>
+                                    <option value="master">Force Master (Master: SYS ➔ PHC)</option>
+                                </select>
                             </div>
-                            <div class="col-5">
+                            <div class="col-4">
+                                <label class="small fw-bold text-muted">Log Level</label>
                                 <select class="form-select form-select-sm" id="logLevel" title="Log Level">
-                                    <option value="6" selected>Info (Std)</option>
+                                    <option value="6" selected>Info</option>
                                     <option value="5">Notice</option>
-                                    <option value="4">Warning</option>
+                                    <option value="4">Warn</option>
                                     <option value="3">Error</option>
                                 </select>
                             </div>
@@ -669,25 +585,15 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 </div>
 <script>
     let profiles={}; 
-    // Config Fields
-    const FIELDS=['timeStamping','domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout', 'syncSystem', 'logLevel'];
+    const FIELDS=['timeStamping','domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout', 'syncMode', 'logLevel'];
     const EXT_FIELDS=['profileSelect','clockMode','interface','bcSlaveIf','bcMasterIf']; 
     let offsetChart = null;
 
-    function init(){ 
-        initChart(); 
-        fetchProfiles(); 
-        setInterval(updateStatus, 1000); 
-        setInterval(updateLogs, 2500); 
-    }
+    function init(){ initChart(); fetchProfiles(); setInterval(updateStatus, 1000); setInterval(updateLogs, 2500); }
 
-    // --- LocalStorage ---
     function saveConfigCache() {
         let cache = {};
-        FIELDS.forEach(f => { 
-            const el=document.getElementById(f); 
-            if(el) cache[f] = (el.type === 'checkbox') ? el.checked : el.value;
-        });
+        FIELDS.forEach(f => { const el=document.getElementById(f); if(el) cache[f] = (el.type === 'checkbox') ? el.checked : el.value; });
         EXT_FIELDS.forEach(f => { const el=document.getElementById(f); if(el) cache[f]=el.value; });
         localStorage.setItem('ptp4l_last_config', JSON.stringify(cache));
     }
@@ -709,16 +615,12 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
         } catch(e) {}
     }
 
-    // --- Profile Logic ---
     function fetchProfiles(){ 
         fetch('/api/profiles').then(r=>r.json()).then(d=>{ 
             profiles=d; 
             const s=document.getElementById('profileSelect'); 
             s.innerHTML='<option value="" disabled selected>-- Select --</option>'; 
-            for(let i in d){ 
-                let o=document.createElement('option'); 
-                o.value=i; o.text=d[i].name+(d[i].is_builtin?"*":""); s.add(o); 
-            }
+            for(let i in d){ let o=document.createElement('option'); o.value=i; o.text=d[i].name+(d[i].is_builtin?"*":""); s.add(o); }
             loadConfigCache();
         });
     }
@@ -736,31 +638,18 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
         if(!pid || !profiles[pid]) return;
         const newName = prompt("Rename Profile:", profiles[pid].name);
         if(!newName) return;
-
         let cleanConfig = {};
-        FIELDS.forEach(f => {
-            const el = document.getElementById(f);
-            if(el) cleanConfig[f] = (el.type === 'checkbox') ? el.checked : el.value; 
-            else cleanConfig[f] = profiles[pid][f];
-        });
-
+        FIELDS.forEach(f => { const el = document.getElementById(f); if(el) cleanConfig[f] = (el.type === 'checkbox') ? el.checked : el.value; else cleanConfig[f] = profiles[pid][f]; });
         fetch('/api/profiles', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name: newName, config: cleanConfig}) })
-        .then(r=>r.json()).then(d => {
-            if(d.status === 'success') {
-                fetch('/api/profiles/' + pid, { method:'DELETE' }).then(() => { alert("Renamed!"); fetchProfiles(); });
-            }
-        });
+        .then(r=>r.json()).then(d => { if(d.status === 'success') { fetch('/api/profiles/' + pid, { method:'DELETE' }).then(() => { alert("Renamed!"); fetchProfiles(); }); } });
     }
 
     function deleteProfile() {
         const pid = document.getElementById('profileSelect').value;
         if(!confirm("Delete?")) return;
-        fetch('/api/profiles/' + pid, { method:'DELETE' }).then(r=>r.json()).then(d => {
-            if(d.status==='success') { alert("Deleted!"); fetchProfiles(); }
-        });
+        fetch('/api/profiles/' + pid, { method:'DELETE' }).then(r=>r.json()).then(d => { if(d.status==='success') { alert("Deleted!"); fetchProfiles(); } });
     }
     
-    // --- Core Logic ---
     function initChart(){
         const ctx = document.getElementById('offsetChart');
         if(!ctx) return;
@@ -792,6 +681,7 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
             let el=document.getElementById(f);
             if(el) {
                 if(el.type === 'checkbox') el.checked = profiles[p][f] === true;
+                else if (f === 'syncMode' && profiles[p][f] === undefined) { if (profiles[p]['syncSystem'] === true) el.value = 'slave'; else el.value = 'none'; }
                 else el.value = (profiles[p][f] !== undefined) ? profiles[p][f] : (f==='logLevel'?6:0);
             }
         }); 
@@ -802,12 +692,7 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
         if(m==='BC'){ d.bcSlaveIf=document.getElementById('bcSlaveIf').value; d.bcMasterIf=document.getElementById('bcMasterIf').value; if(!d.bcSlaveIf||!d.bcMasterIf||d.bcSlaveIf===d.bcMasterIf){ alert("Invalid BC Config"); return; } }
         else{ d.interface=document.getElementById('interface').value; if(!d.interface){ alert("Select Interface"); return; } }
         if(!confirm("Apply & Restart?")) return;
-        
-        FIELDS.forEach(f=>{ 
-            let el=document.getElementById(f); 
-            d[f] = (el.type === 'checkbox') ? el.checked : el.value;
-        });
-        
+        FIELDS.forEach(f=>{ let el=document.getElementById(f); d[f] = (el.type === 'checkbox') ? el.checked : el.value; });
         saveConfigCache(); 
         fetch('/api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)}).then(r=>r.json()).then(r=>{ if(r.status==='success') alert("✅ Success!"); else alert("❌ "+r.message); }).catch(e=>alert("Error:"+e));
     }
@@ -815,46 +700,39 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
     function updateStatus(){ 
         fetch('/api/status').then(r=>r.json()).then(d=>{
             const c=document.getElementById('ptpCard'), t=document.getElementById('ptpState');
-            
-            // Update PTP Time Display
             const ptpTimeEl = document.getElementById('ptpTimeVal');
             if(d.ptp_time && d.ptp_time !== "--") {
                 ptpTimeEl.innerText = d.ptp_time;
-                // Check Year (Safe Check)
                 const year = parseInt(d.ptp_time.split('-')[0]);
-                if(year < 2023) {
-                    ptpTimeEl.style.color = "#ff6b6b"; // Red warning
-                    ptpTimeEl.innerHTML = "⚠️ " + d.ptp_time;
-                } else {
-                    ptpTimeEl.style.color = "#51cf66"; // Green safe
-                }
-            } else {
-                ptpTimeEl.innerText = "--";
-                ptpTimeEl.style.color = "white";
-            }
+                if(year < 2023) { ptpTimeEl.style.color = "#ff6b6b"; ptpTimeEl.innerHTML = "⚠️ " + d.ptp_time; } else { ptpTimeEl.style.color = "#51cf66"; }
+            } else { ptpTimeEl.innerText = "--"; ptpTimeEl.style.color = "white"; }
 
             if(d.ptp4l==='RUNNING'){
                 t.innerText=d.port||"UNKNOWN"; 
                 document.getElementById('serviceStateDetail').innerText="Running";
                 c.className='status-box shadow-sm ';
-                if(d.port==='SLAVE') c.className += 'bg-slave';
-                else if(d.port==='MASTER'||d.port==='GRAND_MASTER') c.className += 'bg-master';
-                else c.className += 'bg-running';
                 
-                // System Clock Indicator Logic
+                // --- Color Logic (Updated v3.13) ---
+                const p = d.port;
+                if(p==='MASTER'||p==='GRAND_MASTER') c.className += 'bg-master';
+                else if(p==='SLAVE') c.className += 'bg-slave';
+                else if(p==='UNCALIBRATED'||p==='LISTENING'||p==='INITIALIZING') c.className += 'bg-syncing'; // Orange
+                else if(p==='FAULTY'||p==='DISABLED') c.className += 'bg-stopped'; // Red
+                else if(p==='PASSIVE') c.className += 'bg-passive'; // Grey
+                else c.className += 'bg-running'; // Fallback Green
+                
                 const phcEl = document.getElementById('phcBadge');
                 if(phcEl) {
                     if(d.phc2sys === 'RUNNING') {
                         phcEl.className = "badge bg-success border border-light";
                         phcEl.style.opacity = "1.0";
-                        phcEl.title = "System clock is synced to PTP";
+                        phcEl.innerText = "SYNC ON";
                     } else {
                         phcEl.className = "badge bg-dark border border-secondary";
                         phcEl.style.opacity = "0.3";
-                        phcEl.title = "System clock sync inactive";
+                        phcEl.innerText = "SYNC OFF";
                     }
                 }
-
                 if(d.port !== 'UNKNOWN') updateChartData(Math.round(d.offset));
             } else { 
                 c.className='status-box bg-stopped shadow-sm'; t.innerText="STOPPED"; 
@@ -883,40 +761,28 @@ EOF
 # --- 7. 配置 Python 环境 ---
 echo "[6/9] 配置 Python 虚拟环境..."
 cd "$INSTALL_DIR"
-# 即使有旧的也删除，确保依赖纯净
 rm -rf .venv
 python3 -m venv .venv
 ./.venv/bin/pip install --upgrade pip
-# 安装锁定的依赖
 ./.venv/bin/pip install -r requirements.txt
 
 # --- 8. 配置 Systemd & Firewall ---
 echo "[7/9] 配置服务与防火墙..."
-
-# 8.1 防火墙配置 (放行 8080 & PTP UDP 319/320)
 if command -v firewall-cmd &> /dev/null; then
-    echo "   正在配置 firewalld (CentOS/RHEL)..."
-    # Web 控制台端口
     firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
-    # PTP 协议端口 (Event Message)
     firewall-cmd --permanent --add-port=319/udp >/dev/null 2>&1 || true
-    # PTP 协议端口 (General Message)
     firewall-cmd --permanent --add-port=320/udp >/dev/null 2>&1 || true
     firewall-cmd --reload >/dev/null 2>&1 || true
 elif command -v ufw &> /dev/null; then
-    echo "   正在配置 ufw (Ubuntu/Debian)..."
     ufw allow 8080/tcp >/dev/null 2>&1 || true
     ufw allow 319/udp >/dev/null 2>&1 || true
     ufw allow 320/udp >/dev/null 2>&1 || true
 fi
 
-# 8.2 创建默认配置文件 (防止首次启动失败)
 if [ ! -f /etc/linuxptp/ptp4l.conf ]; then
-    echo "   创建初始配置文件..."
     echo -e "[global]\nlogging_level 6\nuse_syslog 1\n" > /etc/linuxptp/ptp4l.conf
 fi
 
-# 8.3 Systemd 服务
 cat << 'EOF' > /etc/systemd/system/ptp4l.service
 [Unit]
 Description=Precision Time Protocol (PTP) service
@@ -949,7 +815,6 @@ systemctl daemon-reload
 systemctl enable ptp4l ptp-web
 systemctl restart ptp-web
 
-# 获取 IP (兼容精简版系统)
 if command -v hostname &> /dev/null; then
     IP=$(hostname -I | awk '{print $1}')
 else
@@ -957,7 +822,7 @@ else
 fi
 
 echo "=========================================================="
-echo "   ✅ PTP4L 控制台安装完成 (v3.10 Expert)！"
+echo "   ✅ PTP4L 控制台安装完成 (v3.13 Expert)！"
 echo "   👉 访问地址: http://$IP:8080"
-echo "   👉 新特性: 增加 PTP 硬件时间显示与安全同步锁"
+echo "   👉 优化: 状态显示更丰富 (LISTENING橙色/FAULTY红色)"
 echo "=========================================================="
