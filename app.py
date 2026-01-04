@@ -15,19 +15,17 @@ app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = "/etc/linuxptp/ptp4l.conf"
 PHC2SYS_SERVICE_FILE = "/etc/systemd/system/phc2sys-custom.service"
-# Fix: Ensure this path is valid, we will auto-create the dir if missing
 SAFE_WRAPPER_SCRIPT = "/usr/local/bin/ptp-safe-wrapper.sh"
 USER_PROFILES_FILE = os.path.join(BASE_DIR, "user_profiles.json")
 
 # --- Built-in Profiles ---
 BUILTIN_PROFILES = {
-    "default": { "name": "Default (IEEE 1588)", "timeStamping": "hardware", "domain": 0, "priority1": 128, "priority2": 128, "logAnnounceInterval": 1, "logSyncInterval": 0, "logMinDelayReqInterval": 0, "announceReceiptTimeout": 3, "syncSystem": False, "logLevel": 6 },
-    "aes67": { "name": "AES67 (Media)", "timeStamping": "hardware", "domain": 0, "priority1": 128, "priority2": 128, "logAnnounceInterval": 1, "logSyncInterval": -3, "logMinDelayReqInterval": 0, "announceReceiptTimeout": 3, "syncSystem": True, "logLevel": 6 },
-    "st2059": { "name": "SMPTE ST 2059-2 (Broadcast)", "timeStamping": "hardware", "domain": 127, "priority1": 128, "priority2": 128, "logAnnounceInterval": -2, "logSyncInterval": -3, "logMinDelayReqInterval": -2, "announceReceiptTimeout": 3, "syncSystem": True, "logLevel": 6 }
+    "default": { "name": "Default (IEEE 1588)", "timeStamping": "hardware", "domain": 0, "priority1": 128, "priority2": 128, "logAnnounceInterval": 1, "logSyncInterval": 0, "logMinDelayReqInterval": 0, "announceReceiptTimeout": 3, "syncMode": "none", "logLevel": 6 },
+    "aes67": { "name": "AES67 (Media)", "timeStamping": "hardware", "domain": 0, "priority1": 128, "priority2": 128, "logAnnounceInterval": 1, "logSyncInterval": -3, "logMinDelayReqInterval": 0, "announceReceiptTimeout": 3, "syncMode": "slave", "logLevel": 6 },
+    "st2059": { "name": "SMPTE ST 2059-2 (Broadcast)", "timeStamping": "hardware", "domain": 127, "priority1": 128, "priority2": 128, "logAnnounceInterval": -2, "logSyncInterval": -3, "logMinDelayReqInterval": -2, "announceReceiptTimeout": 3, "syncMode": "slave", "logLevel": 6 }
 }
 
 def run_cmd_safe(cmd_list):
-    """Execute command safely without shell injection risk."""
     try:
         env = os.environ.copy()
         env['LANG'] = 'C'
@@ -37,12 +35,10 @@ def run_cmd_safe(cmd_list):
         return ""
 
 def get_current_interface():
-    """Extract active interface from config file."""
     try:
         if os.path.exists(CONFIG_FILE):
             with open(CONFIG_FILE, 'r') as f:
                 for line in f:
-                    # Match [eth0] but exclude [global]
                     m = re.match(r'^\[([^\]]+)\]', line.strip())
                     if m and m.group(1) != 'global':
                         return m.group(1)
@@ -50,20 +46,12 @@ def get_current_interface():
     return None
 
 def get_ptp_time(interface):
-    """Directly query the PTP Hardware Clock time."""
     if not interface: return None
     try:
-        # 1. Get PTP Device ID (e.g. 0 for /dev/ptp0)
-        # Add /usr/sbin to path just in case
         ethtool_out = run_cmd_safe(["ethtool", "-T", interface])
-        
-        # FIX: Regex updated to support both old "PTP Hardware Clock" and new "Hardware timestamp provider index"
         m = re.search(r'(?:PTP Hardware Clock|Hardware timestamp provider index):\s+(\d+)', ethtool_out)
-        
         if not m: return None
         ptp_dev = f"/dev/ptp{m.group(1)}"
-        
-        # 2. Get Time using phc_ctl
         out = run_cmd_safe(["phc_ctl", ptp_dev, "get"])
         m_ts = re.search(r'clock time is (\d+)\.', out)
         if m_ts:
@@ -73,30 +61,18 @@ def get_ptp_time(interface):
     return None
 
 def get_pmc_dict():
-    """Revised Expert-level PTP status query."""
     cmd = ["pmc", "-u", "-b", "0", "-d", "0", 
            "GET CURRENT_DATA_SET", 
            "GET PORT_DATA_SET", 
            "GET TIME_STATUS_NP",
            "GET PARENT_DATA_SET"]
-    
     output = run_cmd_safe(cmd)
-    
-    data = {
-        "port_state": "UNKNOWN",
-        "offset": 0,
-        "path_delay": 0,
-        "steps_removed": -1,
-        "gm_id": "Unknown",
-        "gm_present": False,
-        "clock_id": "",
-        "phc2sys_state": "STOPPED"
-    }
+    data = { "port_state": "UNKNOWN", "offset": 0, "path_delay": 0, "steps_removed": -1, "gm_id": "Unknown", "gm_present": False, "clock_id": "", "phc2sys_state": "STOPPED" }
 
     m_delay = re.search(r'meanPathDelay\s+([\d\.\-eE]+)', output)
     if m_delay:
         try: data['path_delay'] = float(m_delay.group(1))
-        except: data['path_delay'] = 0
+        except: pass
 
     m_steps = re.search(r'stepsRemoved\s+(\d+)', output)
     if m_steps:
@@ -106,7 +82,7 @@ def get_pmc_dict():
     m_off = re.search(r'offsetFromMaster\s+([\d\.\-eE]+)', output)
     if m_off:
         try: data['offset'] = float(m_off.group(1))
-        except: data['offset'] = 0
+        except: pass
 
     m_gm = re.search(r'grandmasterIdentity\s+([0-9a-fA-F\.]+)', output)
     if m_gm: data['gm_id'] = m_gm.group(1)
@@ -123,12 +99,7 @@ def get_pmc_dict():
         elif all(s == 'LISTENING' for s in states): data['port_state'] = 'LISTENING'
         else: data['port_state'] = states[0]
 
-    m_gmp = re.search(r'gmPresent\s+(\w+)', output)
-    if m_gmp: data['gm_present'] = (m_gmp.group(1).lower() == 'true')
-
-    if run_cmd_safe(["pgrep", "-f", "phc2sys"]):
-        data["phc2sys_state"] = "RUNNING"
-
+    if run_cmd_safe(["pgrep", "-f", "phc2sys"]): data["phc2sys_state"] = "RUNNING"
     return data
 
 def load_user_profiles():
@@ -142,75 +113,43 @@ def save_user_profiles(profiles):
     with open(USER_PROFILES_FILE, 'w') as f:
         json.dump(profiles, f, indent=4)
 
-def create_safe_wrapper_script():
-    """Create a wrapper script that checks year > 2023 before syncing."""
-    
-    # 1. Fix: Ensure directory exists
+def create_safe_wrapper_script(sync_mode, log_level):
     script_dir = os.path.dirname(SAFE_WRAPPER_SCRIPT)
     if not os.path.exists(script_dir):
-        try:
-            os.makedirs(script_dir, exist_ok=True)
-        except:
-            pass 
+        try: os.makedirs(script_dir, exist_ok=True)
+        except: pass 
 
-    # 2. Fix: Use standard escaping for backslashes to avoid SyntaxWarning
-    # In Python strings, backslashes for regex/shell must be doubled: \\
-    # Example: To output '\(' in shell, we write '\\(' in Python string.
-    
-    script_content = f"""#!/bin/bash
+    content = """#!/bin/bash
 export PATH=$PATH:/usr/sbin:/usr/bin:/sbin:/bin
-
 INTERFACE=$1
-shift
-ARGS="$@"
-
-# --- 1. Robust PTP Device Discovery ---
-# Works for "PTP Hardware Clock: 0" and "Hardware timestamp provider index: 0"
-# We use grep to find the line, then sed to strip everything before the colon and space.
-PTP_DEV_ID=$(ethtool -T $INTERFACE 2>/dev/null | grep -E "(Clock|index):" | sed 's/.*: //')
-
-if [ -z "$PTP_DEV_ID" ]; then
-    echo "❌ Error: No PTP hardware clock found for $INTERFACE"
-    echo "--- Debug: ethtool output ---"
-    ethtool -T $INTERFACE
-    exit 1
-fi
-
-PTP_DEV="/dev/ptp$PTP_DEV_ID"
-
-if [ ! -e "$PTP_DEV" ]; then
-    echo "❌ Error: Device node $PTP_DEV does not exist!"
-    exit 1
-fi
-
-# --- 2. Sanity Check (Year > 2023) ---
-# Get seconds from PTP clock using phc_ctl
-# FIX: All backslashes below are doubled for Python syntax safety
-PTP_SECONDS=$(phc_ctl $PTP_DEV get 2>/dev/null | sed -n 's/.*clock time is \\([0-9]\\+\\)\\..*/\\1/p')
-
-# Threshold: 1700000000 (Year ~2023)
-if [ -z "$PTP_SECONDS" ] || [ "$PTP_SECONDS" -lt 1700000000 ]; then
-    echo "⚠️ DANGER: PTP time on $INTERFACE is < Year 2023."
-    echo "    Aborting system clock sync to protect SSL/TLS state."
-    exit 1
-fi
-
-echo "✅ PTP time is valid (>2023). Device: $PTP_DEV. Starting phc2sys..."
-exec /usr/sbin/phc2sys -s $INTERFACE -c CLOCK_REALTIME -w -O 0
 """
-    with open(SAFE_WRAPPER_SCRIPT, 'w') as f:
-        f.write(script_content)
+    if sync_mode == 'master':
+        content += f"""
+echo "⚙️ Master Mode detected (SYS -> PHC)."
+exec /usr/sbin/phc2sys -s CLOCK_REALTIME -c $INTERFACE -O 0 -l {log_level}
+"""
+    else:
+        content += f"""
+PTP_DEV_ID=$(ethtool -T $INTERFACE 2>/dev/null | grep -E "(Clock|index):" | sed 's/.*: //')
+if [ -z "$PTP_DEV_ID" ]; then exit 1; fi
+PTP_DEV="/dev/ptp$PTP_DEV_ID"
+PTP_SECONDS=$(phc_ctl $PTP_DEV get 2>/dev/null | sed -n 's/.*clock time is \\([0-9]\\+\\)\\..*/\\1/p')
+if [ -z "$PTP_SECONDS" ] || [ "$PTP_SECONDS" -lt 1700000000 ]; then
+    echo "⚠️ DANGER: PTP time < 2023. Aborting."
+    exit 1
+fi
+echo "✅ PTP time valid. Syncing System..."
+exec /usr/sbin/phc2sys -s $INTERFACE -c CLOCK_REALTIME -w -O 0 -l {log_level}
+"""
+    with open(SAFE_WRAPPER_SCRIPT, 'w') as f: f.write(content)
     os.chmod(SAFE_WRAPPER_SCRIPT, 0o755)
 
-def create_phc2sys_service(interface, mode):
-    """Create systemd service using the safe wrapper."""
-    create_safe_wrapper_script()
-    
+def create_phc2sys_service(interface, sync_mode, log_level):
+    create_safe_wrapper_script(sync_mode, log_level)
     service_content = f"""[Unit]
 Description=Safe System Clock Sync (phc2sys)
 After=ptp4l.service
 Requires=ptp4l.service
-
 [Service]
 Type=simple
 ExecStart={SAFE_WRAPPER_SCRIPT} {interface}
@@ -218,13 +157,10 @@ Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
-
 [Install]
 WantedBy=multi-user.target
 """
-    with open(PHC2SYS_SERVICE_FILE, 'w') as f:
-        f.write(service_content)
-    
+    with open(PHC2SYS_SERVICE_FILE, 'w') as f: f.write(service_content)
     subprocess.run(["systemctl", "daemon-reload"], check=False)
 
 def restart_services_async(enable_phc2sys):
@@ -262,7 +198,6 @@ def handle_profiles():
         for k, v in user_profiles.items():
             combined[k] = {**v, 'is_builtin': False, 'id': k}
         return jsonify(combined)
-    
     req = request.json
     name = req.get('name', 'Untitled')
     pid = "user_" + re.sub(r'\W+', '_', name).lower()
@@ -286,9 +221,12 @@ def apply_config():
     req = request.json
     mode = req.get('clockMode', 'OC')
     ts_mode = req.get('timeStamping', 'hardware')
-    sync_system = req.get('syncSystem', False)
-    log_level = safe_int(req.get('logLevel'), 6)
+    sync_mode = req.get('syncMode')
+    if sync_mode is None:
+        if req.get('syncSystem') is True: sync_mode = 'slave'
+        else: sync_mode = 'none'
 
+    log_level = safe_int(req.get('logLevel'), 6)
     if ts_mode not in ['hardware', 'software', 'legacy', 'onestep']: ts_mode = 'hardware'
     if os.path.exists(CONFIG_FILE): shutil.copy(CONFIG_FILE, CONFIG_FILE + ".bak")
     
@@ -326,37 +264,24 @@ verbose                 1
 
         with open(CONFIG_FILE, 'w') as f: f.write(cfg)
 
-        if sync_system and target_if:
-            create_phc2sys_service(target_if, mode)
+        should_enable_phc = (sync_mode != 'none' and target_if)
+        if should_enable_phc:
+            create_phc2sys_service(target_if, sync_mode, log_level)
 
-        restart_services_async(sync_system)
-        
+        restart_services_async(should_enable_phc)
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/status')
 def get_status():
-    data = { 
-        "ptp4l": "STOPPED", 
-        "phc2sys": "STOPPED",
-        "port": "Offline", 
-        "offset": 0, 
-        "path_delay": 0,
-        "steps_removed": -1,
-        "gm": "Scanning...", 
-        "ptp_time": "--",
-        "is_self": False 
-    }
-    
+    data = { "ptp4l": "STOPPED", "phc2sys": "STOPPED", "port": "Offline", "offset": 0, "path_delay": 0, "steps_removed": -1, "gm": "Scanning...", "ptp_time": "--", "is_self": False }
     iface = get_current_interface()
     if iface:
         t = get_ptp_time(iface)
         if t: data["ptp_time"] = t
-
     if run_cmd_safe(["pgrep", "-x", "ptp4l"]):
         data["ptp4l"] = "RUNNING"
-        
     if data["ptp4l"] == "RUNNING":
         pmc = get_pmc_dict()
         if 'port_state' in pmc: data["port"] = pmc['port_state']
@@ -364,19 +289,16 @@ def get_status():
         if 'path_delay' in pmc: data["path_delay"] = pmc['path_delay']
         if 'steps_removed' in pmc: data["steps_removed"] = pmc['steps_removed']
         if 'phc2sys_state' in pmc: data["phc2sys"] = pmc['phc2sys_state']
-        
         if 'gm_id' in pmc:
             data["gm"] = pmc['gm_id']
             if 'clock_id' in pmc and pmc['gm_id'] == pmc['clock_id']:
                 data["is_self"] = True
                 data["gm"] += " (Self)"
-        
         if data["port"] in ["MASTER", "GRAND_MASTER"]:
             data["offset"] = 0
             data["path_delay"] = 0
             data["steps_removed"] = 0
             data["is_self"] = True
-    
     return jsonify(data)
 
 @app.route('/api/logs')
