@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PTP Controller v3.10 Expert by Vega Sun</title>
+    <title>PTP Controller v3.13 Expert by Vega Sun</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -12,19 +12,19 @@
         .bg-stopped { background-color: #dc3545; }
         .bg-slave { background-color: #0d6efd; }
         .bg-master { background-color: #6610f2; }
-        .bg-init { background-color: #ffc107; color: black; }
+        .bg-syncing { background-color: #fd7e14; }
+        .bg-passive { background-color: #6c757d; }
         #logWindow { background-color: #212529; color: #0f0; height: 350px; overflow-y: auto; padding: 10px; font-family: monospace; font-size: 0.8rem; }
         .metric-label { font-size: 0.75rem; text-transform: uppercase; color: #6c757d; font-weight: bold; }
         .metric-value { font-size: 1.5rem; font-weight: bold; }
         .chart-container { position: relative; height: 250px; width: 100%; }
-        /* New PTP Time style */
         .ptp-time-display { background: rgba(0,0,0,0.2); padding: 5px; border-radius: 4px; margin-top: 10px; font-family: monospace; font-size: 0.9rem; text-align: center;}
     </style>
 </head>
 <body class="bg-light">
 <div class="container-fluid p-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun<small class="text-muted fs-6">v3.10 Expert</small></h3>
+        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun<small class="text-muted fs-6">v3.13 Expert</small></h3>
         <span class="badge bg-secondary">{{ hostname }}</span>
     </div>
     
@@ -33,7 +33,7 @@
             <div id="ptpCard" class="status-box bg-stopped shadow-sm">
                 <div class="d-flex justify-content-between">
                     <small>PTP4L State</small>
-                    <span id="phcBadge" class="badge bg-dark border border-secondary" style="opacity: 0.3">SYS CLK</span>
+                    <span id="phcBadge" class="badge bg-dark border border-secondary" style="opacity: 0.3">SYNC OFF</span>
                 </div>
                 <div id="ptpState" class="h3 mb-0">STOPPED</div>
                 <small id="serviceStateDetail" class="opacity-75">Service Inactive</small>
@@ -126,17 +126,20 @@
                         </div>
                         
                         <div class="row g-2 mb-3 bg-light p-2 rounded border mx-0">
-                            <div class="col-7">
-                                <div class="form-check form-switch mt-1">
-                                    <input class="form-check-input" type="checkbox" id="syncSystem">
-                                    <label class="form-check-label small fw-bold" for="syncSystem">Sync System Clock</label>
-                                </div>
+                            <div class="col-8">
+                                <label class="small fw-bold text-muted">Clock Sync</label>
+                                <select class="form-select form-select-sm" id="syncMode">
+                                    <option value="none">None (Disabled)</option>
+                                    <option value="slave" selected>Follow PTP (Slave: PHC ➔ SYS)</option>
+                                    <option value="master">Force Master (Master: SYS ➔ PHC)</option>
+                                </select>
                             </div>
-                            <div class="col-5">
+                            <div class="col-4">
+                                <label class="small fw-bold text-muted">Log Level</label>
                                 <select class="form-select form-select-sm" id="logLevel" title="Log Level">
-                                    <option value="6" selected>Info (Std)</option>
+                                    <option value="6" selected>Info</option>
                                     <option value="5">Notice</option>
-                                    <option value="4">Warning</option>
+                                    <option value="4">Warn</option>
                                     <option value="3">Error</option>
                                 </select>
                             </div>
@@ -181,25 +184,15 @@
 </div>
 <script>
     let profiles={}; 
-    // Config Fields
-    const FIELDS=['timeStamping','domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout', 'syncSystem', 'logLevel'];
+    const FIELDS=['timeStamping','domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout', 'syncMode', 'logLevel'];
     const EXT_FIELDS=['profileSelect','clockMode','interface','bcSlaveIf','bcMasterIf']; 
     let offsetChart = null;
 
-    function init(){ 
-        initChart(); 
-        fetchProfiles(); 
-        setInterval(updateStatus, 1000); 
-        setInterval(updateLogs, 2500); 
-    }
+    function init(){ initChart(); fetchProfiles(); setInterval(updateStatus, 1000); setInterval(updateLogs, 2500); }
 
-    // --- LocalStorage ---
     function saveConfigCache() {
         let cache = {};
-        FIELDS.forEach(f => { 
-            const el=document.getElementById(f); 
-            if(el) cache[f] = (el.type === 'checkbox') ? el.checked : el.value;
-        });
+        FIELDS.forEach(f => { const el=document.getElementById(f); if(el) cache[f] = (el.type === 'checkbox') ? el.checked : el.value; });
         EXT_FIELDS.forEach(f => { const el=document.getElementById(f); if(el) cache[f]=el.value; });
         localStorage.setItem('ptp4l_last_config', JSON.stringify(cache));
     }
@@ -221,16 +214,12 @@
         } catch(e) {}
     }
 
-    // --- Profile Logic ---
     function fetchProfiles(){ 
         fetch('/api/profiles').then(r=>r.json()).then(d=>{ 
             profiles=d; 
             const s=document.getElementById('profileSelect'); 
             s.innerHTML='<option value="" disabled selected>-- Select --</option>'; 
-            for(let i in d){ 
-                let o=document.createElement('option'); 
-                o.value=i; o.text=d[i].name+(d[i].is_builtin?"*":""); s.add(o); 
-            }
+            for(let i in d){ let o=document.createElement('option'); o.value=i; o.text=d[i].name+(d[i].is_builtin?"*":""); s.add(o); }
             loadConfigCache();
         });
     }
@@ -248,31 +237,18 @@
         if(!pid || !profiles[pid]) return;
         const newName = prompt("Rename Profile:", profiles[pid].name);
         if(!newName) return;
-
         let cleanConfig = {};
-        FIELDS.forEach(f => {
-            const el = document.getElementById(f);
-            if(el) cleanConfig[f] = (el.type === 'checkbox') ? el.checked : el.value; 
-            else cleanConfig[f] = profiles[pid][f];
-        });
-
+        FIELDS.forEach(f => { const el = document.getElementById(f); if(el) cleanConfig[f] = (el.type === 'checkbox') ? el.checked : el.value; else cleanConfig[f] = profiles[pid][f]; });
         fetch('/api/profiles', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name: newName, config: cleanConfig}) })
-        .then(r=>r.json()).then(d => {
-            if(d.status === 'success') {
-                fetch('/api/profiles/' + pid, { method:'DELETE' }).then(() => { alert("Renamed!"); fetchProfiles(); });
-            }
-        });
+        .then(r=>r.json()).then(d => { if(d.status === 'success') { fetch('/api/profiles/' + pid, { method:'DELETE' }).then(() => { alert("Renamed!"); fetchProfiles(); }); } });
     }
 
     function deleteProfile() {
         const pid = document.getElementById('profileSelect').value;
         if(!confirm("Delete?")) return;
-        fetch('/api/profiles/' + pid, { method:'DELETE' }).then(r=>r.json()).then(d => {
-            if(d.status==='success') { alert("Deleted!"); fetchProfiles(); }
-        });
+        fetch('/api/profiles/' + pid, { method:'DELETE' }).then(r=>r.json()).then(d => { if(d.status==='success') { alert("Deleted!"); fetchProfiles(); } });
     }
     
-    // --- Core Logic ---
     function initChart(){
         const ctx = document.getElementById('offsetChart');
         if(!ctx) return;
@@ -304,6 +280,7 @@
             let el=document.getElementById(f);
             if(el) {
                 if(el.type === 'checkbox') el.checked = profiles[p][f] === true;
+                else if (f === 'syncMode' && profiles[p][f] === undefined) { if (profiles[p]['syncSystem'] === true) el.value = 'slave'; else el.value = 'none'; }
                 else el.value = (profiles[p][f] !== undefined) ? profiles[p][f] : (f==='logLevel'?6:0);
             }
         }); 
@@ -314,12 +291,7 @@
         if(m==='BC'){ d.bcSlaveIf=document.getElementById('bcSlaveIf').value; d.bcMasterIf=document.getElementById('bcMasterIf').value; if(!d.bcSlaveIf||!d.bcMasterIf||d.bcSlaveIf===d.bcMasterIf){ alert("Invalid BC Config"); return; } }
         else{ d.interface=document.getElementById('interface').value; if(!d.interface){ alert("Select Interface"); return; } }
         if(!confirm("Apply & Restart?")) return;
-        
-        FIELDS.forEach(f=>{ 
-            let el=document.getElementById(f); 
-            d[f] = (el.type === 'checkbox') ? el.checked : el.value;
-        });
-        
+        FIELDS.forEach(f=>{ let el=document.getElementById(f); d[f] = (el.type === 'checkbox') ? el.checked : el.value; });
         saveConfigCache(); 
         fetch('/api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)}).then(r=>r.json()).then(r=>{ if(r.status==='success') alert("✅ Success!"); else alert("❌ "+r.message); }).catch(e=>alert("Error:"+e));
     }
@@ -327,46 +299,39 @@
     function updateStatus(){ 
         fetch('/api/status').then(r=>r.json()).then(d=>{
             const c=document.getElementById('ptpCard'), t=document.getElementById('ptpState');
-            
-            // Update PTP Time Display
             const ptpTimeEl = document.getElementById('ptpTimeVal');
             if(d.ptp_time && d.ptp_time !== "--") {
                 ptpTimeEl.innerText = d.ptp_time;
-                // Check Year (Safe Check)
                 const year = parseInt(d.ptp_time.split('-')[0]);
-                if(year < 2023) {
-                    ptpTimeEl.style.color = "#ff6b6b"; // Red warning
-                    ptpTimeEl.innerHTML = "⚠️ " + d.ptp_time;
-                } else {
-                    ptpTimeEl.style.color = "#51cf66"; // Green safe
-                }
-            } else {
-                ptpTimeEl.innerText = "--";
-                ptpTimeEl.style.color = "white";
-            }
+                if(year < 2023) { ptpTimeEl.style.color = "#ff6b6b"; ptpTimeEl.innerHTML = "⚠️ " + d.ptp_time; } else { ptpTimeEl.style.color = "#51cf66"; }
+            } else { ptpTimeEl.innerText = "--"; ptpTimeEl.style.color = "white"; }
 
             if(d.ptp4l==='RUNNING'){
                 t.innerText=d.port||"UNKNOWN"; 
                 document.getElementById('serviceStateDetail').innerText="Running";
                 c.className='status-box shadow-sm ';
-                if(d.port==='SLAVE') c.className += 'bg-slave';
-                else if(d.port==='MASTER'||d.port==='GRAND_MASTER') c.className += 'bg-master';
-                else c.className += 'bg-running';
                 
-                // System Clock Indicator Logic
+                // --- Color Logic (Updated v3.13) ---
+                const p = d.port;
+                if(p==='MASTER'||p==='GRAND_MASTER') c.className += 'bg-master';
+                else if(p==='SLAVE') c.className += 'bg-slave';
+                else if(p==='UNCALIBRATED'||p==='LISTENING'||p==='INITIALIZING') c.className += 'bg-syncing'; // Orange
+                else if(p==='FAULTY'||p==='DISABLED') c.className += 'bg-stopped'; // Red
+                else if(p==='PASSIVE') c.className += 'bg-passive'; // Grey
+                else c.className += 'bg-running'; // Fallback Green
+                
                 const phcEl = document.getElementById('phcBadge');
                 if(phcEl) {
                     if(d.phc2sys === 'RUNNING') {
                         phcEl.className = "badge bg-success border border-light";
                         phcEl.style.opacity = "1.0";
-                        phcEl.title = "System clock is synced to PTP";
+                        phcEl.innerText = "SYNC ON";
                     } else {
                         phcEl.className = "badge bg-dark border border-secondary";
                         phcEl.style.opacity = "0.3";
-                        phcEl.title = "System clock sync inactive";
+                        phcEl.innerText = "SYNC OFF";
                     }
                 }
-
                 if(d.port !== 'UNKNOWN') updateChartData(Math.round(d.offset));
             } else { 
                 c.className='status-box bg-stopped shadow-sm'; t.innerText="STOPPED"; 
