@@ -74,7 +74,7 @@ Fedora43 Server，2 x Intel I226-V网卡
 ## 克隆仓库：
 
     git clone https://github.com/SileNt525/ptp4l-web-controller.git
-    cd ptp4l-web-controller
+    cd ptp4l-web-controller/source
 
 ## 运行：
 
