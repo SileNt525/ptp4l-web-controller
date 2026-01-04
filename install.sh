@@ -2,9 +2,10 @@
 set -e
 
 # ================================================================
-#   PTP4L Web Controller Installer (v3.13 Expert Edition)
+#   PTP4L Web Controller Installer (v3.14 Expert Edition)
 #   Updates: 
-#     - UI: Richer Color Status for PTP States (Orange/Grey added)
+#     - Feat: Auto-skip Time Sync in LXC containers (Fixes permission error)
+#     - UI: Richer Color Status for PTP States
 #     - Logic: Sync Mode Selector (None/Slave/Master)
 #     - Fix: Log Level & Firewall Rules
 #   Target: Fresh Linux Install (CentOS/RHEL/Ubuntu/Debian)
@@ -17,20 +18,41 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-echo "🚀 开始全自动部署 PTP4L Web Controller (v3.13 Expert)..."
+echo "🚀 开始全自动部署 PTP4L Web Controller (v3.14 Expert)..."
 
-# --- 2. 紧急时间校准 ---
+# --- 2. 紧急时间校准 (LXC 智能跳过) ---
 echo "[1/9] 检查并校准系统时间..."
-if command -v curl &> /dev/null; then
-    NET_TIME=$(curl -I --insecure http://www.baidu.com 2>/dev/null | grep ^Date: | sed 's/Date: //g')
-    if [ -n "$NET_TIME" ]; then
-        date -s "$NET_TIME" >/dev/null
-        echo "   ✅ 时间已校准为: $(date)"
-    else
-        echo "   ⚠️ 无法获取网络时间，跳过校准"
+
+# 检测 LXC 环境
+IS_LXC=false
+# 方法1: 使用 systemd 工具检测
+if command -v systemd-detect-virt &> /dev/null; then
+    VIRT=$(systemd-detect-virt || true)
+    if [ "$VIRT" == "lxc" ]; then
+        IS_LXC=true
     fi
+# 方法2: 检查进程环境变量 (备用)
+elif [ -f /proc/1/environ ]; then
+    if grep -qa "container=lxc" /proc/1/environ; then
+        IS_LXC=true
+    fi
+fi
+
+if [ "$IS_LXC" = true ]; then
+    echo "   ⚠️ 检测到 LXC 容器环境 (测试模式)，跳过时间校准步骤以避免权限错误。"
 else
-    echo "   ⚠️ 未找到 curl，跳过时间校准"
+    # 非 LXC 环境，执行常规校准
+    if command -v curl &> /dev/null; then
+        NET_TIME=$(curl -I --insecure http://www.baidu.com 2>/dev/null | grep ^Date: | sed 's/Date: //g')
+        if [ -n "$NET_TIME" ]; then
+            date -s "$NET_TIME" >/dev/null
+            echo "   ✅ 时间已校准为: $(date)"
+        else
+            echo "   ⚠️ 无法获取网络时间，跳过校准"
+        fi
+    else
+        echo "   ⚠️ 未找到 curl，跳过时间校准"
+    fi
 fi
 
 # --- 3. 清理旧环境 ---
