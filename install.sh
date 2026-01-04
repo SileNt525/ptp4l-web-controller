@@ -893,14 +893,21 @@ python3 -m venv .venv
 # --- 8. 配置 Systemd & Firewall ---
 echo "[7/9] 配置服务与防火墙..."
 
-# 8.1 防火墙配置 (放行 8080)
+# 8.1 防火墙配置 (放行 8080 & PTP UDP 319/320)
 if command -v firewall-cmd &> /dev/null; then
     echo "   正在配置 firewalld (CentOS/RHEL)..."
+    # Web 控制台端口
     firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
+    # PTP 协议端口 (Event Message)
+    firewall-cmd --permanent --add-port=319/udp >/dev/null 2>&1 || true
+    # PTP 协议端口 (General Message)
+    firewall-cmd --permanent --add-port=320/udp >/dev/null 2>&1 || true
     firewall-cmd --reload >/dev/null 2>&1 || true
 elif command -v ufw &> /dev/null; then
     echo "   正在配置 ufw (Ubuntu/Debian)..."
     ufw allow 8080/tcp >/dev/null 2>&1 || true
+    ufw allow 319/udp >/dev/null 2>&1 || true
+    ufw allow 320/udp >/dev/null 2>&1 || true
 fi
 
 # 8.2 创建默认配置文件 (防止首次启动失败)
