@@ -2,7 +2,9 @@
 
 一个轻量级、可视化的 Linux PTP (Precision Time Protocol) 管理面板。专为广电 IP 化 (SMPTE ST 2110) 及高精度时间同步场景设计。
 
-Designed by Vega Sun, Developed by Gemini3.0 Pro
+#### Designed by Vega Sun
+
+#### Developed by Gemini3.0 Pro
 
 
 <img width="1564" height="969" alt="image" src="https://github.com/user-attachments/assets/32174b31-4d28-4e4c-ba1a-12e0d45cb654" />
