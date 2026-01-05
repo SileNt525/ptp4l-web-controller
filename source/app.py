@@ -16,6 +16,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = "/etc/linuxptp/ptp4l.conf"
 PHC2SYS_SERVICE_FILE = "/etc/systemd/system/phc2sys-custom.service"
 SAFE_WRAPPER_SCRIPT = "/usr/local/bin/ptp-safe-wrapper.sh"
+INJECT_SCRIPT = "/usr/local/bin/ptp-inject"
 USER_PROFILES_FILE = os.path.join(BASE_DIR, "user_profiles.json")
 
 # --- Built-in Profiles ---
@@ -61,7 +62,7 @@ def get_ptp_time(interface):
     return None
 
 def get_pmc_dict():
-    cmd = ["pmc", "-u", "-b", "0", "-d", "0", 
+    cmd = ["pmc", "-u", "-b", "0", 
            "GET CURRENT_DATA_SET", 
            "GET PORT_DATA_SET", 
            "GET TIME_STATUS_NP",
@@ -163,7 +164,14 @@ WantedBy=multi-user.target
     with open(PHC2SYS_SERVICE_FILE, 'w') as f: f.write(service_content)
     subprocess.run(["systemctl", "daemon-reload"], check=False)
 
-def restart_services_async(enable_phc2sys):
+def call_inject_script(domain):
+    """Calls the external shell script to handle PMC injection safely."""
+    try:
+        subprocess.run([INJECT_SCRIPT, str(domain)], check=False)
+    except Exception as e:
+        print(f"Injection call failed: {e}")
+
+def restart_services_async(enable_phc2sys, master_mode=False, domain=0):
     def _restart():
         time.sleep(0.5)
         subprocess.run(["systemctl", "restart", "ptp4l"], check=False)
@@ -173,6 +181,11 @@ def restart_services_async(enable_phc2sys):
         else:
             subprocess.run(["systemctl", "stop", "phc2sys-custom"], check=False)
             subprocess.run(["systemctl", "disable", "phc2sys-custom"], check=False)
+        
+        # === INJECTION ===
+        if master_mode:
+            call_inject_script(domain)
+            
     threading.Thread(target=_restart).start()
 
 def safe_int(val, default=0):
@@ -230,6 +243,16 @@ def apply_config():
     if ts_mode not in ['hardware', 'software', 'legacy', 'onestep']: ts_mode = 'hardware'
     if os.path.exists(CONFIG_FILE): shutil.copy(CONFIG_FILE, CONFIG_FILE + ".bak")
     
+    # --- MASTER CONFIG ---
+    is_master_mode = (sync_mode == 'master')
+    
+    if is_master_mode:
+        clock_class = 13       # Consistent with injected value
+        time_source = "0x40"   # NTP
+    else:
+        clock_class = 248
+        time_source = "0xA0"   # Internal Osc
+
     try:
         cfg = f"""[global]
 network_transport       UDPv4
@@ -238,6 +261,8 @@ delay_mechanism         E2E
 domainNumber            {safe_int(req.get('domain'))}
 priority1               {safe_int(req.get('priority1'), 128)}
 priority2               {safe_int(req.get('priority2'), 128)}
+clockClass              {clock_class}
+timeSource              {time_source}
 logAnnounceInterval     {safe_int(req.get('logAnnounceInterval'), 1)}
 logSyncInterval         {safe_int(req.get('logSyncInterval'))}
 logMinDelayReqInterval  {safe_int(req.get('logMinDelayReqInterval'))}
@@ -268,7 +293,8 @@ verbose                 1
         if should_enable_phc:
             create_phc2sys_service(target_if, sync_mode, log_level)
 
-        restart_services_async(should_enable_phc)
+        domain_val = safe_int(req.get('domain'), 0)
+        restart_services_async(should_enable_phc, is_master_mode, domain_val)
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
