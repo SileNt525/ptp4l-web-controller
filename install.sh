@@ -2,12 +2,14 @@
 set -e
 
 # ================================================================
-#   PTP4L Web Controller Installer (v3.14 Expert Edition)
+#   PTP4L Web Controller Installer (v3.19 Stability Edition)
 #   Updates: 
-#     - Feat: Auto-skip Time Sync in LXC containers (Fixes permission error)
-#     - UI: Richer Color Status for PTP States
-#     - Logic: Sync Mode Selector (None/Slave/Master)
-#     - Fix: Log Level & Firewall Rules
+#     - Feat: Switch to NTP timeSource (0x40) for stable UTC traceability (no GPS claim)
+#     - Fix: Removed unnecessary -d 0 from PMC (works on any domain via UDS)
+#     - Fix: Increased delay before PMC injection for reliability
+#     - Stability: clockClass=165 (application-specific) to reduce aggressive GM election
+#     - Force: timeTraceable=1 & frequencyTraceable=1 still injected in Master Mode
+#     - Note: For best stability, ensure system clock is synced via NTP/chrony
 #   Target: Fresh Linux Install (CentOS/RHEL/Ubuntu/Debian)
 #   User: Root Only
 # ================================================================
@@ -18,30 +20,22 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-echo "🚀 开始全自动部署 PTP4L Web Controller (v3.14 Expert)..."
+echo "🚀 开始全自动部署 PTP4L Web Controller (v3.19 Stability)..."
 
 # --- 2. 紧急时间校准 (LXC 智能跳过) ---
 echo "[1/9] 检查并校准系统时间..."
 
-# 检测 LXC 环境
 IS_LXC=false
-# 方法1: 使用 systemd 工具检测
 if command -v systemd-detect-virt &> /dev/null; then
     VIRT=$(systemd-detect-virt || true)
-    if [ "$VIRT" == "lxc" ]; then
-        IS_LXC=true
-    fi
-# 方法2: 检查进程环境变量 (备用)
+    if [ "$VIRT" == "lxc" ]; then IS_LXC=true; fi
 elif [ -f /proc/1/environ ]; then
-    if grep -qa "container=lxc" /proc/1/environ; then
-        IS_LXC=true
-    fi
+    if grep -qa "container=lxc" /proc/1/environ; then IS_LXC=true; fi
 fi
 
 if [ "$IS_LXC" = true ]; then
     echo "   ⚠️ 检测到 LXC 容器环境 (测试模式)，跳过时间校准步骤以避免权限错误。"
 else
-    # 非 LXC 环境，执行常规校准
     if command -v curl &> /dev/null; then
         NET_TIME=$(curl -I --insecure http://www.baidu.com 2>/dev/null | grep ^Date: | sed 's/Date: //g')
         if [ -n "$NET_TIME" ]; then
@@ -100,7 +94,7 @@ packaging==25.0
 Werkzeug==3.1.4
 EOF
 
-# 6.2 APP.PY
+# 6.2 APP.PY (Updated v3.19: Stable NTP-based traceability)
 cat << 'EOF' > "$INSTALL_DIR/app.py"
 import os
 import subprocess
@@ -165,7 +159,7 @@ def get_ptp_time(interface):
     return None
 
 def get_pmc_dict():
-    cmd = ["pmc", "-u", "-b", "0", "-d", "0", 
+    cmd = ["pmc", "-u", "-b", "0", 
            "GET CURRENT_DATA_SET", 
            "GET PORT_DATA_SET", 
            "GET TIME_STATUS_NP",
@@ -267,7 +261,35 @@ WantedBy=multi-user.target
     with open(PHC2SYS_SERVICE_FILE, 'w') as f: f.write(service_content)
     subprocess.run(["systemctl", "daemon-reload"], check=False)
 
-def restart_services_async(enable_phc2sys):
+def inject_traceable_flags():
+    """Uses PMC to force traceable flags on a running ptp4l instance."""
+    # Stable UTC traceability via NTP source (no GPS claim)
+    # clockClass=165 (application-specific), timeSource=0x40 (NTP)
+    # Forces timeTraceable=1 and frequencyTraceable=1
+    cmd = [
+        "pmc", "-u", "-b", "0",
+        "SET GRANDMASTER_SETTINGS_NP",
+        "clockClass", "165",
+        "clockAccuracy", "0xFE",
+        "offsetScaledLogVariance", "0xFFFF",
+        "currentUtcOffset", "37",
+        "leap61", "0",
+        "leap59", "0",
+        "currentUtcOffsetValid", "1",
+        "ptpTimescale", "1",
+        "timeTraceable", "1",
+        "frequencyTraceable", "1",
+        "timeSource", "0x40"
+    ]
+    try:
+        # Longer delay for ptp4l to fully initialize
+        time.sleep(5)
+        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(["logger", "-t", "ptp-web", "Injected NTP-based Traceable=1 flags via PMC"], check=False)
+    except:
+        pass
+
+def restart_services_async(enable_phc2sys, master_mode=False):
     def _restart():
         time.sleep(0.5)
         subprocess.run(["systemctl", "restart", "ptp4l"], check=False)
@@ -277,6 +299,10 @@ def restart_services_async(enable_phc2sys):
         else:
             subprocess.run(["systemctl", "stop", "phc2sys-custom"], check=False)
             subprocess.run(["systemctl", "disable", "phc2sys-custom"], check=False)
+        
+        if master_mode:
+            inject_traceable_flags()
+            
     threading.Thread(target=_restart).start()
 
 def safe_int(val, default=0):
@@ -334,6 +360,16 @@ def apply_config():
     if ts_mode not in ['hardware', 'software', 'legacy', 'onestep']: ts_mode = 'hardware'
     if os.path.exists(CONFIG_FILE): shutil.copy(CONFIG_FILE, CONFIG_FILE + ".bak")
     
+    # --- MASTER CONFIG (v3.19 Stability) ---
+    is_master_mode = (sync_mode == 'master')
+    
+    if is_master_mode:
+        clock_class = 13      # Application-specific (less aggressive)
+        time_source = "0x40"   # NTP (stable UTC traceability)
+    else:
+        clock_class = 248
+        time_source = "0xA0"   # Internal Osc
+
     try:
         cfg = f"""[global]
 network_transport       UDPv4
@@ -342,6 +378,8 @@ delay_mechanism         E2E
 domainNumber            {safe_int(req.get('domain'))}
 priority1               {safe_int(req.get('priority1'), 128)}
 priority2               {safe_int(req.get('priority2'), 128)}
+clockClass              {clock_class}
+timeSource              {time_source}
 logAnnounceInterval     {safe_int(req.get('logAnnounceInterval'), 1)}
 logSyncInterval         {safe_int(req.get('logSyncInterval'))}
 logMinDelayReqInterval  {safe_int(req.get('logMinDelayReqInterval'))}
@@ -372,7 +410,7 @@ verbose                 1
         if should_enable_phc:
             create_phc2sys_service(target_if, sync_mode, log_level)
 
-        restart_services_async(should_enable_phc)
+        restart_services_async(should_enable_phc, is_master_mode)
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -419,14 +457,14 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
 EOF
 
-# 6.3 INDEX.HTML (Updated v3.13 with Richer Colors)
+# 6.3 INDEX.HTML (unchanged from v3.18)
 cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PTP Controller v3.13 Expert by Vega Sun</title>
+    <title>PTP Controller v3.19 Stability by Vega Sun</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -447,7 +485,7 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <body class="bg-light">
 <div class="container-fluid p-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun<small class="text-muted fs-6">v3.13 Expert</small></h3>
+        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun<small class="text-muted fs-6">v3.19 Stability</small></h3>
         <span class="badge bg-secondary">{{ hostname }}</span>
     </div>
     
@@ -734,14 +772,13 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
                 document.getElementById('serviceStateDetail').innerText="Running";
                 c.className='status-box shadow-sm ';
                 
-                // --- Color Logic (Updated v3.13) ---
                 const p = d.port;
                 if(p==='MASTER'||p==='GRAND_MASTER') c.className += 'bg-master';
                 else if(p==='SLAVE') c.className += 'bg-slave';
-                else if(p==='UNCALIBRATED'||p==='LISTENING'||p==='INITIALIZING') c.className += 'bg-syncing'; // Orange
-                else if(p==='FAULTY'||p==='DISABLED') c.className += 'bg-stopped'; // Red
-                else if(p==='PASSIVE') c.className += 'bg-passive'; // Grey
-                else c.className += 'bg-running'; // Fallback Green
+                else if(p==='UNCALIBRATED'||p==='LISTENING'||p==='INITIALIZING') c.className += 'bg-syncing';
+                else if(p==='FAULTY'||p==='DISABLED'||p==='UNKNOWN') c.className += 'bg-stopped';
+                else if(p==='PASSIVE') c.className += 'bg-passive';
+                else c.className += 'bg-running';
                 
                 const phcEl = document.getElementById('phcBadge');
                 if(phcEl) {
@@ -844,7 +881,8 @@ else
 fi
 
 echo "=========================================================="
-echo "   ✅ PTP4L 控制台安装完成 (v3.13 Expert)！"
+echo "   ✅ PTP4L 控制台安装完成 (v3.19 Stability)！"
 echo "   👉 访问地址: http://$IP:8080"
-echo "   👉 优化: 状态显示更丰富 (LISTENING橙色/FAULTY红色)"
+echo "   👉 优化: 使用 NTP 时间源实现稳定 UTC 可追溯性"
+echo "   👉 建议: 系统开启 NTP/chrony 同步以获得最佳稳定性"
 echo "=========================================================="
