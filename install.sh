@@ -47,7 +47,11 @@ fi
 # --- 3. 基础环境准备 ---
 echo "[2/9] 清理旧服务与文件..."
 systemctl stop ptp-web ptp4l phc2sys phc2sys-custom 2>/dev/null || true
-rm -f /usr/local/bin/ptp-inject # 删除旧的注入脚本
+systemctl disable phc2sys phc2sys-custom 2>/dev/null || true
+rm -f /usr/local/bin/ptp-inject.sh
+rm -f /etc/systemd/system/phc2sys.service
+rm -f /etc/systemd/system/phc2sys-custom.service
+rm -f /usr/local/bin/ptp-safe-wrapper.sh
 systemctl daemon-reload
 
 # 基础依赖安装
