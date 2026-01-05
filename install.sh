@@ -4,6 +4,7 @@ set -e
 # ================================================================
 #   PTP4L Web Controller Installer (v3.23 Ultimate Edition)
 #   Fix: 优化 clockAccuracy 为 0x27 (100μs)，配合 Class 13 实现高优先级
+#   Security: 包含 ptp-safe-wrapper 保护逻辑，防止非法时间同步
 #   Target: Root User
 # ================================================================
 
@@ -266,6 +267,8 @@ echo "⚙️ Master Mode detected (SYS -> PHC)."
 exec /usr/sbin/phc2sys -s CLOCK_REALTIME -c $INTERFACE -O 0 -l {log_level}
 """
     else:
+        # --- SAFE GUARD LOGIC (From PTP 3.16) ---
+        # Ensures we do not sync INVALID PTP time (e.g., 1970) to System
         content += f"""
 PTP_DEV_ID=$(ethtool -T $INTERFACE 2>/dev/null | grep -E "(Clock|index):" | sed 's/.*: //')
 if [ -z "$PTP_DEV_ID" ]; then exit 1; fi
@@ -487,7 +490,7 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PTP Controller v3.23 Ultimate by Vega Sun</title>
+    <title>PTP Controller</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -508,7 +511,7 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <body class="bg-light">
 <div class="container-fluid p-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun<small class="text-muted fs-6">v3.23 Ultimate</small></h3>
+        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun <small class="text-muted fs-6">v3.23 Ultimate</small></h3>
         <span class="badge bg-secondary">{{ hostname }}</span>
     </div>
     
