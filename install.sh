@@ -2,29 +2,23 @@
 set -e
 
 # ================================================================
-#   PTP4L Web Controller Installer (v3.19 Stability Edition)
-#   Updates: 
-#     - Feat: Switch to NTP timeSource (0x40) for stable UTC traceability (no GPS claim)
-#     - Fix: Removed unnecessary -d 0 from PMC (works on any domain via UDS)
-#     - Fix: Increased delay before PMC injection for reliability
-#     - Stability: clockClass=165 (application-specific) to reduce aggressive GM election
-#     - Force: timeTraceable=1 & frequencyTraceable=1 still injected in Master Mode
-#     - Note: For best stability, ensure system clock is synced via NTP/chrony
-#   Target: Fresh Linux Install (CentOS/RHEL/Ubuntu/Debian)
-#   User: Root Only
+#   PTP4L Web Controller Installer (v3.23 Ultimate Edition)
+#   Fix: 优化 clockAccuracy 为 0x27 (100μs)，配合 Class 13 实现高优先级
+#   Target: Root User
 # ================================================================
 
 # --- 1. Root 权限检查 ---
 if [ "$EUID" -ne 0 ]; then
-  echo "❌ 错误：请使用 root 用户运行此脚本 (无需 sudo)"
+  echo "❌ 错误：请使用 root 用户运行此脚本"
   exit 1
 fi
 
-echo "🚀 开始全自动部署 PTP4L Web Controller (v3.19 Stability)..."
+echo "🚀 开始部署 PTP4L Web Controller (v3.23 Ultimate)..."
 
 # --- 2. 紧急时间校准 (LXC 智能跳过) ---
 echo "[1/9] 检查并校准系统时间..."
 
+# 检测 LXC 环境
 IS_LXC=false
 if command -v systemd-detect-virt &> /dev/null; then
     VIRT=$(systemd-detect-virt || true)
@@ -49,39 +43,80 @@ else
     fi
 fi
 
-# --- 3. 清理旧环境 ---
-echo "[2/9] 清理旧服务..."
+
+# --- 3. 基础环境准备 ---
+echo "[2/9] 清理旧服务与文件..."
 systemctl stop ptp-web ptp4l phc2sys phc2sys-custom 2>/dev/null || true
-systemctl disable phc2sys phc2sys-custom 2>/dev/null || true
-rm -f /etc/systemd/system/phc2sys.service
-rm -f /etc/systemd/system/phc2sys-custom.service
-rm -f /usr/local/bin/ptp-safe-wrapper.sh
+rm -f /usr/local/bin/ptp-inject # 删除旧的注入脚本
 systemctl daemon-reload
 
-# --- 4. 安装系统级依赖 ---
-echo "[3/9] 安装系统基础依赖..."
-if [ -f /etc/os-release ]; then . /etc/os-release; OS=$ID; else OS="unknown"; fi
+# 基础依赖安装
+if [ -f /etc/os-release ]; then . /etc/os-release; fi
 COMMON_PKGS="linuxptp ethtool python3"
-
-if [[ "$OS" =~ (fedora|rhel|centos|rocky|almalinux) ]]; then
+if [[ "$ID" =~ (fedora|rhel|centos) ]]; then
     dnf install -y $COMMON_PKGS python3-pip curl
-elif [[ "$OS" =~ (debian|ubuntu|kali|linuxmint) ]]; then
+elif [[ "$ID" =~ (debian|ubuntu) ]]; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update
-    apt-get install -y $COMMON_PKGS python3-venv python3-pip curl
+    apt-get update && apt-get install -y $COMMON_PKGS python3-venv python3-pip curl
 fi
 
-# --- 5. 初始化目录 ---
-echo "[4/9] 建立目录结构..."
+# --- 4. 建立目录结构 ---
 INSTALL_DIR="/opt/ptp-web"
 rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/templates"
 mkdir -p /etc/linuxptp
 
-# --- 6. 写入核心文件 ---
-echo "[5/9] 释放核心代码..."
+# --- 5. 生成关键 Shell 脚本 (优化 Accuracy) ---
+echo "[3/9] 生成 PTP 注入脚本..."
 
-# 6.1 Requirements
+# 生成 /usr/local/bin/ptp-inject
+cat << 'EOF' > /usr/local/bin/ptp-inject
+#!/bin/bash
+# PTP4L 状态强制注入工具
+# Usage: ptp-inject <domain_number>
+
+DOMAIN=${1:-0}
+LOG_TAG="ptp-inject"
+
+# 等待 ptp4l 启动就绪
+for i in {1..10}; do
+    if pgrep -x "ptp4l" > /dev/null; then
+        break
+    fi
+    sleep 1
+done
+sleep 5 # 额外等待端口初始化
+
+# 构造并发送指令
+# clockClass 13: 应用级最高优先级
+# clockAccuracy 0x27: < 100μs (NTP 精度)
+# timeTraceable 1: 声明时间可追溯
+CMD="SET GRANDMASTER_SETTINGS_NP clockClass 13 clockAccuracy 0x27 offsetScaledLogVariance 0xFFFF currentUtcOffset 37 leap61 0 leap59 0 currentUtcOffsetValid 1 ptpTimescale 1 timeTraceable 1 frequencyTraceable 1 timeSource 0x50"
+
+echo "Running injection on Domain $DOMAIN..." | logger -t $LOG_TAG
+
+# 尝试注入 3 次
+for i in {1..3}; do
+    OUT=$(pmc -u -b 0 -d "$DOMAIN" "$CMD" 2>&1)
+    
+    if echo "$OUT" | grep -q "RESPONSE"; then
+        echo "✅ Injection SUCCESS on Domain $DOMAIN" | logger -t $LOG_TAG
+        exit 0
+    else
+        echo "⚠️ Injection attempt $i failed: $OUT" | logger -t $LOG_TAG
+        sleep 2
+    fi
+done
+
+echo "❌ Injection FAILED after retries" | logger -t $LOG_TAG
+exit 1
+EOF
+
+chmod +x /usr/local/bin/ptp-inject
+
+# --- 6. 写入 Python 代码 ---
+echo "[4/9] 写入应用程序..."
+
 cat << 'EOF' > "$INSTALL_DIR/requirements.txt"
 blinker==1.9.0
 click==8.3.1
@@ -94,7 +129,6 @@ packaging==25.0
 Werkzeug==3.1.4
 EOF
 
-# 6.2 APP.PY (Updated v3.19: Stable NTP-based traceability)
 cat << 'EOF' > "$INSTALL_DIR/app.py"
 import os
 import subprocess
@@ -114,6 +148,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = "/etc/linuxptp/ptp4l.conf"
 PHC2SYS_SERVICE_FILE = "/etc/systemd/system/phc2sys-custom.service"
 SAFE_WRAPPER_SCRIPT = "/usr/local/bin/ptp-safe-wrapper.sh"
+INJECT_SCRIPT = "/usr/local/bin/ptp-inject"
 USER_PROFILES_FILE = os.path.join(BASE_DIR, "user_profiles.json")
 
 # --- Built-in Profiles ---
@@ -261,35 +296,14 @@ WantedBy=multi-user.target
     with open(PHC2SYS_SERVICE_FILE, 'w') as f: f.write(service_content)
     subprocess.run(["systemctl", "daemon-reload"], check=False)
 
-def inject_traceable_flags():
-    """Uses PMC to force traceable flags on a running ptp4l instance."""
-    # Stable UTC traceability via NTP source (no GPS claim)
-    # clockClass=165 (application-specific), timeSource=0x40 (NTP)
-    # Forces timeTraceable=1 and frequencyTraceable=1
-    cmd = [
-        "pmc", "-u", "-b", "0",
-        "SET GRANDMASTER_SETTINGS_NP",
-        "clockClass", "165",
-        "clockAccuracy", "0xFE",
-        "offsetScaledLogVariance", "0xFFFF",
-        "currentUtcOffset", "37",
-        "leap61", "0",
-        "leap59", "0",
-        "currentUtcOffsetValid", "1",
-        "ptpTimescale", "1",
-        "timeTraceable", "1",
-        "frequencyTraceable", "1",
-        "timeSource", "0x40"
-    ]
+def call_inject_script(domain):
+    """Calls the external shell script to handle PMC injection safely."""
     try:
-        # Longer delay for ptp4l to fully initialize
-        time.sleep(5)
-        subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        subprocess.run(["logger", "-t", "ptp-web", "Injected NTP-based Traceable=1 flags via PMC"], check=False)
-    except:
-        pass
+        subprocess.run([INJECT_SCRIPT, str(domain)], check=False)
+    except Exception as e:
+        print(f"Injection call failed: {e}")
 
-def restart_services_async(enable_phc2sys, master_mode=False):
+def restart_services_async(enable_phc2sys, master_mode=False, domain=0):
     def _restart():
         time.sleep(0.5)
         subprocess.run(["systemctl", "restart", "ptp4l"], check=False)
@@ -300,8 +314,9 @@ def restart_services_async(enable_phc2sys, master_mode=False):
             subprocess.run(["systemctl", "stop", "phc2sys-custom"], check=False)
             subprocess.run(["systemctl", "disable", "phc2sys-custom"], check=False)
         
+        # === INJECTION ===
         if master_mode:
-            inject_traceable_flags()
+            call_inject_script(domain)
             
     threading.Thread(target=_restart).start()
 
@@ -360,12 +375,12 @@ def apply_config():
     if ts_mode not in ['hardware', 'software', 'legacy', 'onestep']: ts_mode = 'hardware'
     if os.path.exists(CONFIG_FILE): shutil.copy(CONFIG_FILE, CONFIG_FILE + ".bak")
     
-    # --- MASTER CONFIG (v3.19 Stability) ---
+    # --- MASTER CONFIG ---
     is_master_mode = (sync_mode == 'master')
     
     if is_master_mode:
-        clock_class = 13      # Application-specific (less aggressive)
-        time_source = "0x40"   # NTP (stable UTC traceability)
+        clock_class = 13       # Consistent with injected value
+        time_source = "0x40"   # NTP
     else:
         clock_class = 248
         time_source = "0xA0"   # Internal Osc
@@ -410,7 +425,8 @@ verbose                 1
         if should_enable_phc:
             create_phc2sys_service(target_if, sync_mode, log_level)
 
-        restart_services_async(should_enable_phc, is_master_mode)
+        domain_val = safe_int(req.get('domain'), 0)
+        restart_services_async(should_enable_phc, is_master_mode, domain_val)
         return jsonify({"status": "success"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -457,14 +473,17 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
 EOF
 
-# 6.3 INDEX.HTML (unchanged from v3.18)
+# 7 生成 INDEX.HTML
+
+echo "[5/9] 写入前端UI..."
+
 cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <!DOCTYPE html>
 <html lang="zh">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PTP Controller v3.19 Stability by Vega Sun</title>
+    <title>PTP Controller v3.23 Ultimate by Vega Sun</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -485,7 +504,7 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <body class="bg-light">
 <div class="container-fluid p-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun<small class="text-muted fs-6">v3.19 Stability</small></h3>
+        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun<small class="text-muted fs-6">v3.23 Ultimate</small></h3>
         <span class="badge bg-secondary">{{ hostname }}</span>
     </div>
     
@@ -817,31 +836,16 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 </html>
 EOF
 
-# --- 7. 配置 Python 环境 ---
-echo "[6/9] 配置 Python 虚拟环境..."
+# --- 8. Python 环境 ---
+echo "[6/9] 配置环境..."
 cd "$INSTALL_DIR"
 rm -rf .venv
 python3 -m venv .venv
 ./.venv/bin/pip install --upgrade pip
 ./.venv/bin/pip install -r requirements.txt
 
-# --- 8. 配置 Systemd & Firewall ---
-echo "[7/9] 配置服务与防火墙..."
-if command -v firewall-cmd &> /dev/null; then
-    firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
-    firewall-cmd --permanent --add-port=319/udp >/dev/null 2>&1 || true
-    firewall-cmd --permanent --add-port=320/udp >/dev/null 2>&1 || true
-    firewall-cmd --reload >/dev/null 2>&1 || true
-elif command -v ufw &> /dev/null; then
-    ufw allow 8080/tcp >/dev/null 2>&1 || true
-    ufw allow 319/udp >/dev/null 2>&1 || true
-    ufw allow 320/udp >/dev/null 2>&1 || true
-fi
-
-if [ ! -f /etc/linuxptp/ptp4l.conf ]; then
-    echo -e "[global]\nlogging_level 6\nuse_syslog 1\n" > /etc/linuxptp/ptp4l.conf
-fi
-
+# --- 9. 系统服务 ---
+echo "[7/9] 注册服务..."
 cat << 'EOF' > /etc/systemd/system/ptp4l.service
 [Unit]
 Description=Precision Time Protocol (PTP) service
@@ -868,8 +872,17 @@ Restart=always
 WantedBy=multi-user.target
 EOF
 
-# --- 9. 启动 ---
-echo "[8/9] 启动服务..."
+# --- 10. 防火墙 ---
+echo "[8/9] 防火墙放行..."
+if command -v firewall-cmd &> /dev/null; then
+    firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
+    firewall-cmd --permanent --add-port=319/udp >/dev/null 2>&1 || true
+    firewall-cmd --permanent --add-port=320/udp >/dev/null 2>&1 || true
+    firewall-cmd --reload >/dev/null 2>&1 || true
+fi
+
+# --- 11. 启动 ---
+echo "[9/9] 启动..."
 systemctl daemon-reload
 systemctl enable ptp4l ptp-web
 systemctl restart ptp-web
@@ -881,8 +894,7 @@ else
 fi
 
 echo "=========================================================="
-echo "   ✅ PTP4L 控制台安装完成 (v3.19 Stability)！"
-echo "   👉 访问地址: http://$IP:8080"
-echo "   👉 优化: 使用 NTP 时间源实现稳定 UTC 可追溯性"
-echo "   👉 建议: 系统开启 NTP/chrony 同步以获得最佳稳定性"
+echo "   ✅ PTP4L 控制台 (v3.23 Ultimate) 已就绪！"
+echo "   👉 请在网页端重新点击【Apply & Restart】"
+echo "   👉 访问: http://$IP:8080"
 echo "=========================================================="
