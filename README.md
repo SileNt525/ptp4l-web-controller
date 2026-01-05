@@ -2,6 +2,8 @@
 
 一个轻量级、可视化的 Linux PTP (Precision Time Protocol) 管理面板。专为广电 IP 化 (SMPTE ST 2110) 及高精度时间同步场景设计。
 
+A lightweight web interface for managing linuxptp (ptp4l + phc2sys) on Linux servers. Designed specifically for Broadcast & Media (SMPTE ST 2110 / AES67) workflows.
+
 #### Designed by Vega Sun
 
 #### Developed by Gemini3.0 Pro
@@ -11,17 +13,25 @@
 
 BC模式运行，将位于10.1.3.0/24网段主时钟分发至192.168.42.0/24网段
 
+In BC mode operation, the master clock located in the 10.1.3.0/24 is distributed to the 192.168.42.0/24.
+
 <img width="1501" height="469" alt="image" src="https://github.com/user-attachments/assets/d0fa648f-9893-40fe-b438-4c2acc19edb1" />
 
 位于192.168.42.0/24网段设备已锁定
+
+Device located in the 192.168.42.0/24 have been locked.
 
 <img width="1511" height="462" alt="image" src="https://github.com/user-attachments/assets/829439cb-1316-4c48-976d-caa6bc92d31e" />
 
 位于10.1.3.0/24网段设备已锁定
 
+Device located in the 10.1.3.0/24 have been locked.
+
 <img width="595" height="238" alt="image" src="https://github.com/user-attachments/assets/c9491155-afbb-4500-a116-326b712f4cf3" />
 
 主时钟设备
+
+GM device
 
 
 ## 测试环境
@@ -47,6 +57,19 @@ Fedora43 Server，2 x Intel I226-V网卡
 🔧 一键部署：自动处理 Systemd 服务依赖、防火墙端口及 Python 环境。
 
 💻 跨发行版支持：完美支持 Fedora 43+, CentOS Stream 9, Ubuntu 22.04+, Debian 12+。
+
+🚀 Features
+
+Web UI Dashboard: Real-time monitoring of PTP offset, Path Delay, and Grandmaster ID.
+
+Broadcast Ready:
+
+Pre-configured profiles for SMPTE ST 2059-2 and AES67.
+
+Auto-Injection: Automatically forces clockClass 13 and clockAccuracy 0x27.
+
+Stability: Separates phc2sys into a safe wrapper to prevent system clock jumps.
+
 
 # 🚀 快速开始 (Quick Start)
 
