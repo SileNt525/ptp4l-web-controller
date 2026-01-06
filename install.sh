@@ -2,10 +2,15 @@
 set -e
 
 # ================================================================
-#   PTP4L Web Controller Installer (v3.23 Ultimate Edition)
-#   Fix: 优化 clockAccuracy 为 0x27 (100μs)，配合 Class 13 实现高优先级
-#   Security: 包含 ptp-safe-wrapper 保护逻辑，防止非法时间同步
-#   Target: Root User
+#   PTP4L Web Controller Installer (v4.0 Stable Edition)
+#   Optimized for: Broadcast Engineer (ST 2110 / AES67)
+#   Fixes:
+#     - Client Monitor Flickering (Increased TTL)
+#     - Log Reading Performance (Reduced I/O load)
+#   Key Features:
+#     - PTP Client Radar (Stable)
+#     - Smart Injection & Traceable Flags
+#     - Atomic Writes & Security Hardening
 # ================================================================
 
 # --- 1. Root 权限检查 ---
@@ -14,12 +19,10 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-echo "🚀 开始部署 PTP4L Web Controller (v3.23 Ultimate)..."
+echo "🚀 开始部署 PTP4L Web Controller (v6.1 Stable)..."
 
-# --- 2. 紧急时间校准 (LXC 智能跳过) ---
-echo "[1/9] 检查并校准系统时间..."
-
-# 检测 LXC 环境
+# --- 2. 紧急时间校准 ---
+echo "[1/8] 检查系统时间..."
 IS_LXC=false
 if command -v systemd-detect-virt &> /dev/null; then
     VIRT=$(systemd-detect-virt || true)
@@ -29,40 +32,36 @@ elif [ -f /proc/1/environ ]; then
 fi
 
 if [ "$IS_LXC" = true ]; then
-    echo "   ⚠️ 检测到 LXC 容器环境 (测试模式)，跳过时间校准步骤以避免权限错误。"
+    echo "   ⚠️ 检测到 LXC 容器环境，跳过时间校准。"
 else
     if command -v curl &> /dev/null; then
-        NET_TIME=$(curl -I --insecure http://www.baidu.com 2>/dev/null | grep ^Date: | sed 's/Date: //g')
+        NET_TIME=$(curl -I --insecure --connect-timeout 3 http://www.baidu.com 2>/dev/null | grep ^Date: | sed 's/Date: //g')
         if [ -n "$NET_TIME" ]; then
             date -s "$NET_TIME" >/dev/null
             echo "   ✅ 时间已校准为: $(date)"
         else
             echo "   ⚠️ 无法获取网络时间，跳过校准"
         fi
-    else
-        echo "   ⚠️ 未找到 curl，跳过时间校准"
     fi
 fi
 
-
 # --- 3. 基础环境准备 ---
-echo "[2/9] 清理旧服务与文件..."
+echo "[2/8] 清理旧服务与文件..."
 systemctl stop ptp-web ptp4l phc2sys phc2sys-custom 2>/dev/null || true
 systemctl disable phc2sys phc2sys-custom 2>/dev/null || true
-rm -f /usr/local/bin/ptp-inject.sh
 rm -f /etc/systemd/system/phc2sys.service
 rm -f /etc/systemd/system/phc2sys-custom.service
 rm -f /usr/local/bin/ptp-safe-wrapper.sh
 systemctl daemon-reload
 
-# 基础依赖安装
+# 基础依赖安装 (包含 tcpdump)
 if [ -f /etc/os-release ]; then . /etc/os-release; fi
-COMMON_PKGS="linuxptp ethtool python3"
+COMMON_PKGS="linuxptp ethtool python3 tcpdump"
 if [[ "$ID" =~ (fedora|rhel|centos) ]]; then
     dnf install -y $COMMON_PKGS python3-pip curl
 elif [[ "$ID" =~ (debian|ubuntu) ]]; then
     export DEBIAN_FRONTEND=noninteractive
-    apt-get update && apt-get install -y $COMMON_PKGS python3-venv python3-pip curl
+    apt update && apt install -y $COMMON_PKGS python3-venv python3-pip curl
 fi
 
 # --- 4. 建立目录结构 ---
@@ -71,56 +70,57 @@ rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/templates"
 mkdir -p /etc/linuxptp
 
-# --- 5. 生成关键 Shell 脚本 (优化 Accuracy) ---
-echo "[3/9] 生成 PTP 注入脚本..."
+# --- 5. 生成优化的 PTP 注入脚本 ---
+echo "[3/8] 生成 PTP 注入工具..."
 
-# 生成 /usr/local/bin/ptp-inject
 cat << 'EOF' > /usr/local/bin/ptp-inject
 #!/bin/bash
-# PTP4L 状态强制注入工具
+# PTP4L 状态强制注入工具 (v6.2 Robust)
 # Usage: ptp-inject <domain_number>
 
 DOMAIN=${1:-0}
 LOG_TAG="ptp-inject"
 
-# 等待 ptp4l 启动就绪
-for i in {1..10}; do
-    if pgrep -x "ptp4l" > /dev/null; then
-        break
-    fi
-    sleep 1
-done
-sleep 5 # 额外等待端口初始化
-
-# 构造并发送指令
-# clockClass 13: 应用级最高优先级
-# clockAccuracy 0x27: < 100μs (NTP 精度)
-# timeTraceable 1: 声明时间可追溯
+# 构造指令：包含 clockClass 13 (Master) 以及 ST 2110 必需的 Traceable 标志
 CMD="SET GRANDMASTER_SETTINGS_NP clockClass 13 clockAccuracy 0x27 offsetScaledLogVariance 0xFFFF currentUtcOffset 37 leap61 0 leap59 0 currentUtcOffsetValid 1 ptpTimescale 1 timeTraceable 1 frequencyTraceable 1 timeSource 0x50"
 
-echo "Running injection on Domain $DOMAIN..." | logger -t $LOG_TAG
+echo "Starting injection loop on Domain $DOMAIN..." | logger -t $LOG_TAG
 
-# 尝试注入 3 次
-for i in {1..3}; do
+# 循环尝试注入 (持续 20 秒)，确保覆盖 ptp4l 的 LISTENING -> MASTER 状态转换期
+# 只要成功一次，并不代表状态会一直保持，所以我们在这个窗口期内多次确认
+SUCCESS_COUNT=0
+
+for i in {1..20}; do
+    # 运行 PMC 命令
     OUT=$(pmc -u -b 0 -d "$DOMAIN" "$CMD" 2>&1)
     
-    if echo "$OUT" | grep -q "RESPONSE"; then
-        echo "✅ Injection SUCCESS on Domain $DOMAIN" | logger -t $LOG_TAG
-        exit 0
+    # 检查结果：必须包含 RESPONSE 且不能包含 ERROR
+    if echo "$OUT" | grep -q "RESPONSE" && ! echo "$OUT" | grep -q "ERROR"; then
+        echo "✅ Injection attempt $i: SUCCESS" | logger -t $LOG_TAG
+        SUCCESS_COUNT=$((SUCCESS_COUNT+1))
+        
+        # 即使成功了，我们也建议稍微多试几次或者在初期保持覆盖
+        # 但为了效率，如果连续成功2次，我们就认为稳定了
+        if [ "$SUCCESS_COUNT" -ge 2 ]; then
+            echo "🚀 Injection Stabilized on Domain $DOMAIN" | logger -t $LOG_TAG
+            exit 0
+        fi
     else
-        echo "⚠️ Injection attempt $i failed: $OUT" | logger -t $LOG_TAG
-        sleep 2
+        echo "⚠️ Injection attempt $i failed/ignored. Retrying..." | logger -t $LOG_TAG
+        SUCCESS_COUNT=0 # 如果中间失败了，重置计数
     fi
+    
+    sleep 1
 done
 
-echo "❌ Injection FAILED after retries" | logger -t $LOG_TAG
+echo "❌ Injection timed out (Process might not be Master or ready)" | logger -t $LOG_TAG
 exit 1
 EOF
 
 chmod +x /usr/local/bin/ptp-inject
 
-# --- 6. 写入 Python 代码 ---
-echo "[4/9] 写入应用程序..."
+# --- 6. 写入 Python 核心代码 ---
+echo "[4/8] 写入应用程序核心 (app.py)..."
 
 cat << 'EOF' > "$INSTALL_DIR/requirements.txt"
 blinker==1.9.0
@@ -143,6 +143,7 @@ import socket
 import shutil
 import threading
 import time
+import atexit
 from datetime import datetime
 from flask import Flask, render_template, request, jsonify
 
@@ -156,6 +157,21 @@ SAFE_WRAPPER_SCRIPT = "/usr/local/bin/ptp-safe-wrapper.sh"
 INJECT_SCRIPT = "/usr/local/bin/ptp-inject"
 USER_PROFILES_FILE = os.path.join(BASE_DIR, "user_profiles.json")
 
+# Global Cache
+STATUS_CACHE = { "time": 0, "data": None }
+
+# --- Client Monitoring Globals ---
+MONITOR_CONFIG = { "mode": "disabled", "interface": None }
+CLIENTS = {} # { ip: { mac: str, last_seen: float } }
+CLIENTS_LOCK = threading.Lock()
+
+# --- Cleanup on Exit ---
+def cleanup_subprocesses():
+    # 退出时强制清理 tcpdump，防止僵尸进程
+    os.system("pkill -f 'tcpdump -i .* dst port 319'")
+
+atexit.register(cleanup_subprocesses)
+
 # --- Built-in Profiles ---
 BUILTIN_PROFILES = {
     "default": { "name": "Default (IEEE 1588)", "timeStamping": "hardware", "domain": 0, "priority1": 128, "priority2": 128, "logAnnounceInterval": 1, "logSyncInterval": 0, "logMinDelayReqInterval": 0, "announceReceiptTimeout": 3, "syncMode": "none", "logLevel": 6 },
@@ -167,10 +183,71 @@ def run_cmd_safe(cmd_list):
     try:
         env = os.environ.copy()
         env['LANG'] = 'C'
-        result = subprocess.check_output(cmd_list, stderr=subprocess.STDOUT, timeout=2, env=env)
+        # Reduced timeout to prevent long blocking
+        result = subprocess.check_output(cmd_list, stderr=subprocess.STDOUT, timeout=1.5, env=env)
         return result.decode('utf-8', errors='ignore')
     except:
         return ""
+
+def validate_interface(iface):
+    if not iface: return False
+    try:
+        valid_nics = os.listdir('/sys/class/net/')
+        return iface in valid_nics
+    except:
+        return False
+
+# --- Monitor Logic (Production Grade) ---
+def monitor_thread_func():
+    global CLIENTS
+    proc = None
+    while True:
+        mode = MONITOR_CONFIG["mode"]
+        iface = MONITOR_CONFIG["interface"]
+
+        if mode == "disabled" or not iface:
+            if proc:
+                try: proc.terminate(); proc.wait()
+                except: pass
+                proc = None
+            time.sleep(2)
+            continue
+        
+        if not proc or proc.poll() is not None:
+            cmd = ["tcpdump", "-i", iface, "-nn", "-l", "-e", "dst port 319"]
+            try:
+                proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+            except Exception as e:
+                time.sleep(5)
+                continue
+
+        try:
+            line = proc.stdout.readline()
+            if not line:
+                time.sleep(0.1) 
+                continue
+
+            current_time = time.time()
+            m = re.search(r'([0-9a-fA-F:]{17}) > .*? (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\.319 >', line)
+            if m:
+                mac = m.group(1)
+                ip = m.group(2)
+                with CLIENTS_LOCK:
+                    CLIENTS[ip] = { "mac": mac, "last_seen": current_time }
+        except Exception as e:
+            time.sleep(1)
+
+def cleanup_thread():
+    while True:
+        time.sleep(5)
+        now = time.time()
+        with CLIENTS_LOCK:
+            to_remove = [ip for ip, d in CLIENTS.items() if now - d['last_seen'] > 120]
+            for ip in to_remove:
+                del CLIENTS[ip]
+
+threading.Thread(target=monitor_thread_func, daemon=True).start()
+threading.Thread(target=cleanup_thread, daemon=True).start()
 
 def get_current_interface():
     try:
@@ -202,23 +279,23 @@ def get_pmc_dict():
     cmd = ["pmc", "-u", "-b", "0", 
            "GET CURRENT_DATA_SET", 
            "GET PORT_DATA_SET", 
-           "GET TIME_STATUS_NP",
+           "GET TIME_STATUS_NP", 
            "GET PARENT_DATA_SET"]
     output = run_cmd_safe(cmd)
     data = { "port_state": "UNKNOWN", "offset": 0, "path_delay": 0, "steps_removed": -1, "gm_id": "Unknown", "gm_present": False, "clock_id": "", "phc2sys_state": "STOPPED" }
 
     m_delay = re.search(r'meanPathDelay\s+([\d\.\-eE]+)', output)
-    if m_delay:
+    if m_delay: 
         try: data['path_delay'] = float(m_delay.group(1))
         except: pass
 
     m_steps = re.search(r'stepsRemoved\s+(\d+)', output)
-    if m_steps:
+    if m_steps: 
         try: data['steps_removed'] = int(m_steps.group(1))
         except: pass
 
     m_off = re.search(r'offsetFromMaster\s+([\d\.\-eE]+)', output)
-    if m_off:
+    if m_off: 
         try: data['offset'] = float(m_off.group(1))
         except: pass
 
@@ -234,7 +311,6 @@ def get_pmc_dict():
         if 'SLAVE' in states: data['port_state'] = 'SLAVE'
         elif all(s == 'MASTER' for s in states): data['port_state'] = 'MASTER'
         elif 'UNCALIBRATED' in states: data['port_state'] = 'UNCALIBRATED'
-        elif all(s == 'LISTENING' for s in states): data['port_state'] = 'LISTENING'
         else: data['port_state'] = states[0]
 
     if run_cmd_safe(["pgrep", "-f", "phc2sys"]): data["phc2sys_state"] = "RUNNING"
@@ -242,14 +318,15 @@ def get_pmc_dict():
 
 def load_user_profiles():
     if os.path.exists(USER_PROFILES_FILE):
-        try:
+        try: 
             with open(USER_PROFILES_FILE, 'r') as f: return json.load(f)
         except: return {}
     return {}
 
 def save_user_profiles(profiles):
-    with open(USER_PROFILES_FILE, 'w') as f:
-        json.dump(profiles, f, indent=4)
+    tmp_file = USER_PROFILES_FILE + ".tmp"
+    with open(tmp_file, 'w') as f: json.dump(profiles, f, indent=4)
+    os.rename(tmp_file, USER_PROFILES_FILE)
 
 def create_safe_wrapper_script(sync_mode, log_level):
     script_dir = os.path.dirname(SAFE_WRAPPER_SCRIPT)
@@ -267,8 +344,6 @@ echo "⚙️ Master Mode detected (SYS -> PHC)."
 exec /usr/sbin/phc2sys -s CLOCK_REALTIME -c $INTERFACE -O 0 -l {log_level}
 """
     else:
-        # --- SAFE GUARD LOGIC (From PTP 3.16) ---
-        # Ensures we do not sync INVALID PTP time (e.g., 1970) to System
         content += f"""
 PTP_DEV_ID=$(ethtool -T $INTERFACE 2>/dev/null | grep -E "(Clock|index):" | sed 's/.*: //')
 if [ -z "$PTP_DEV_ID" ]; then exit 1; fi
@@ -281,8 +356,10 @@ fi
 echo "✅ PTP time valid. Syncing System..."
 exec /usr/sbin/phc2sys -s $INTERFACE -c CLOCK_REALTIME -w -O 0 -l {log_level}
 """
-    with open(SAFE_WRAPPER_SCRIPT, 'w') as f: f.write(content)
-    os.chmod(SAFE_WRAPPER_SCRIPT, 0o755)
+    try:
+        with open(SAFE_WRAPPER_SCRIPT, 'w') as f: f.write(content)
+        os.chmod(SAFE_WRAPPER_SCRIPT, 0o755)
+    except Exception as e: print(f"Error writing wrapper script: {e}")
 
 def create_phc2sys_service(interface, sync_mode, log_level):
     create_safe_wrapper_script(sync_mode, log_level)
@@ -300,20 +377,16 @@ StandardError=journal
 [Install]
 WantedBy=multi-user.target
 """
-    with open(PHC2SYS_SERVICE_FILE, 'w') as f: f.write(service_content)
+    tmp_svc = PHC2SYS_SERVICE_FILE + ".tmp"
+    with open(tmp_svc, 'w') as f: f.write(service_content)
+    os.rename(tmp_svc, PHC2SYS_SERVICE_FILE)
     subprocess.run(["systemctl", "daemon-reload"], check=False)
-
-def call_inject_script(domain):
-    """Calls the external shell script to handle PMC injection safely."""
-    try:
-        subprocess.run([INJECT_SCRIPT, str(domain)], check=False)
-    except Exception as e:
-        print(f"Injection call failed: {e}")
 
 def restart_services_async(enable_phc2sys, master_mode=False, domain=0):
     def _restart():
         time.sleep(0.5)
         subprocess.run(["systemctl", "restart", "ptp4l"], check=False)
+        time.sleep(2) 
         if enable_phc2sys:
             subprocess.run(["systemctl", "enable", "--now", "phc2sys-custom"], check=False)
             subprocess.run(["systemctl", "restart", "phc2sys-custom"], check=False)
@@ -321,9 +394,11 @@ def restart_services_async(enable_phc2sys, master_mode=False, domain=0):
             subprocess.run(["systemctl", "stop", "phc2sys-custom"], check=False)
             subprocess.run(["systemctl", "disable", "phc2sys-custom"], check=False)
         
-        # === INJECTION ===
         if master_mode:
-            call_inject_script(domain)
+            print(f"Fire-and-forget injection for Domain {domain}")
+            subprocess.Popen([INJECT_SCRIPT, str(domain)], 
+                             stdout=subprocess.DEVNULL, 
+                             stderr=subprocess.DEVNULL)
             
     threading.Thread(target=_restart).start()
 
@@ -347,8 +422,7 @@ def handle_profiles():
     if request.method == 'GET':
         user_profiles = load_user_profiles()
         combined = {k: {**v, 'is_builtin': True, 'id': k} for k, v in BUILTIN_PROFILES.items()}
-        for k, v in user_profiles.items():
-            combined[k] = {**v, 'is_builtin': False, 'id': k}
+        for k, v in user_profiles.items(): combined[k] = {**v, 'is_builtin': False, 'id': k}
         return jsonify(combined)
     req = request.json
     name = req.get('name', 'Untitled')
@@ -371,82 +445,66 @@ def delete_profile(pid):
 @app.route('/api/apply', methods=['POST'])
 def apply_config():
     req = request.json
+    target_if = req.get('interface')
     mode = req.get('clockMode', 'OC')
+    if mode == 'BC':
+        slave_if = req.get('bcSlaveIf'); master_if = req.get('bcMasterIf')
+        if not validate_interface(slave_if) or not validate_interface(master_if): return jsonify({"status":"error", "message":"Invalid Interface"}), 400
+    else:
+        if not validate_interface(target_if): return jsonify({"status":"error", "message":"Invalid Interface"}), 400
+
+    monitor_mode = req.get('monitorMode', 'disabled')
+    MONITOR_CONFIG["mode"] = monitor_mode
+    MONITOR_CONFIG["interface"] = req.get('bcMasterIf') if mode == 'BC' else target_if
+    
     ts_mode = req.get('timeStamping', 'hardware')
     sync_mode = req.get('syncMode')
-    if sync_mode is None:
-        if req.get('syncSystem') is True: sync_mode = 'slave'
-        else: sync_mode = 'none'
+    if sync_mode is None: sync_mode = 'slave' if req.get('syncSystem') is True else 'none'
 
     log_level = safe_int(req.get('logLevel'), 6)
     if ts_mode not in ['hardware', 'software', 'legacy', 'onestep']: ts_mode = 'hardware'
+    
     if os.path.exists(CONFIG_FILE): shutil.copy(CONFIG_FILE, CONFIG_FILE + ".bak")
     
-    # --- MASTER CONFIG ---
     is_master_mode = (sync_mode == 'master')
-    
-    if is_master_mode:
-        clock_class = 13       # Consistent with injected value
-        time_source = "0x40"   # NTP
-    else:
-        clock_class = 248
-        time_source = "0xA0"   # Internal Osc
+    clock_class = 13 if is_master_mode else 248
+    time_source = "0x40" if is_master_mode else "0xA0"
 
     try:
-        cfg = f"""[global]
-network_transport       UDPv4
-time_stamping           {ts_mode}
-delay_mechanism         E2E
-domainNumber            {safe_int(req.get('domain'))}
-priority1               {safe_int(req.get('priority1'), 128)}
-priority2               {safe_int(req.get('priority2'), 128)}
-clockClass              {clock_class}
-timeSource              {time_source}
-logAnnounceInterval     {safe_int(req.get('logAnnounceInterval'), 1)}
-logSyncInterval         {safe_int(req.get('logSyncInterval'))}
-logMinDelayReqInterval  {safe_int(req.get('logMinDelayReqInterval'))}
-announceReceiptTimeout  {safe_int(req.get('announceReceiptTimeout'), 3)}
-logging_level           {log_level}
-use_syslog              1
-verbose                 1
-"""
-        target_if = ""
+        cfg = f"[global]\nnetwork_transport UDPv4\ntime_stamping {ts_mode}\ndelay_mechanism E2E\ndomainNumber {safe_int(req.get('domain'))}\npriority1 {safe_int(req.get('priority1'), 128)}\npriority2 {safe_int(req.get('priority2'), 128)}\nclockClass {clock_class}\ntimeSource {time_source}\nlogAnnounceInterval {safe_int(req.get('logAnnounceInterval'), 1)}\nlogSyncInterval {safe_int(req.get('logSyncInterval'))}\nlogMinDelayReqInterval {safe_int(req.get('logMinDelayReqInterval'))}\nannounceReceiptTimeout {safe_int(req.get('announceReceiptTimeout'), 3)}\nlogging_level {log_level}\nuse_syslog 1\nverbose 1\n"
+        final_target_if = ""
         if mode == 'BC':
             cfg += "boundary_clock_jbod 1\n\n"
-            slave_if = req.get('bcSlaveIf')
-            master_if = req.get('bcMasterIf')
-            if not slave_if or not master_if:
-                return jsonify({"status":"error", "message":"BC mode needs 2 interfaces"}), 400
+            slave_if = req.get('bcSlaveIf'); master_if = req.get('bcMasterIf')
             cfg += f"[{slave_if}]\n\n[{master_if}]\nserverOnly 1\n"
-            target_if = slave_if 
+            final_target_if = slave_if 
         else:
-            cfg += "\n"
-            target_if = req.get('interface')
-            if not target_if:
-                return jsonify({"status":"error", "message":"Interface missing"}), 400
-            cfg += f"[{target_if}]\n"
+            cfg += "\n"; target_if = req.get('interface'); cfg += f"[{target_if}]\n"; final_target_if = target_if
 
-        with open(CONFIG_FILE, 'w') as f: f.write(cfg)
+        tmp_conf = CONFIG_FILE + ".tmp"
+        with open(tmp_conf, 'w') as f: f.write(cfg)
+        os.rename(tmp_conf, CONFIG_FILE)
 
-        should_enable_phc = (sync_mode != 'none' and target_if)
-        if should_enable_phc:
-            create_phc2sys_service(target_if, sync_mode, log_level)
+        should_enable_phc = (sync_mode != 'none' and final_target_if)
+        if should_enable_phc: create_phc2sys_service(final_target_if, sync_mode, log_level)
 
         domain_val = safe_int(req.get('domain'), 0)
         restart_services_async(should_enable_phc, is_master_mode, domain_val)
         return jsonify({"status": "success"})
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    except Exception as e: return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/api/status')
 def get_status():
+    global STATUS_CACHE
+    now = time.time()
+    if STATUS_CACHE['data'] and (now - STATUS_CACHE['time'] < 1.0): return jsonify(STATUS_CACHE['data'])
+
     data = { "ptp4l": "STOPPED", "phc2sys": "STOPPED", "port": "Offline", "offset": 0, "path_delay": 0, "steps_removed": -1, "gm": "Scanning...", "ptp_time": "--", "is_self": False }
     iface = get_current_interface()
     if iface:
         t = get_ptp_time(iface)
         if t: data["ptp_time"] = t
-    if run_cmd_safe(["pgrep", "-x", "ptp4l"]):
-        data["ptp4l"] = "RUNNING"
+    if run_cmd_safe(["pgrep", "-x", "ptp4l"]): data["ptp4l"] = "RUNNING"
     if data["ptp4l"] == "RUNNING":
         pmc = get_pmc_dict()
         if 'port_state' in pmc: data["port"] = pmc['port_state']
@@ -460,15 +518,22 @@ def get_status():
                 data["is_self"] = True
                 data["gm"] += " (Self)"
         if data["port"] in ["MASTER", "GRAND_MASTER"]:
-            data["offset"] = 0
-            data["path_delay"] = 0
-            data["steps_removed"] = 0
-            data["is_self"] = True
+            data["offset"] = 0; data["path_delay"] = 0; data["steps_removed"] = 0; data["is_self"] = True
+            
+    STATUS_CACHE = { "time": now, "data": data }
     return jsonify(data)
+
+@app.route('/api/clients')
+def get_clients():
+    with CLIENTS_LOCK:
+        clients_list = []
+        for ip, info in CLIENTS.items():
+            clients_list.append({ "ip": ip, "mac": info["mac"], "last_seen": info["last_seen"] })
+        return jsonify(clients_list)
 
 @app.route('/api/logs')
 def get_logs():
-    return jsonify({"logs": run_cmd_safe(["journalctl", "-u", "ptp4l", "-u", "phc2sys-custom", "-n", "50", "--no-pager", "--output", "cat"])})
+    return jsonify({"logs": run_cmd_safe(["journalctl", "-u", "ptp4l", "-u", "phc2sys-custom", "-n", "30", "--no-pager", "--output", "cat"])})
 
 @app.route('/api/stop', methods=['POST'])
 def stop_service():
@@ -480,9 +545,8 @@ if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
 EOF
 
-# 7 生成 INDEX.HTML
-
-echo "[5/9] 写入前端UI..."
+# --- 7. 前端 UI (保持 Client Monitor 功能) ---
+echo "[5/8] 写入前端UI..."
 
 cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <!DOCTYPE html>
@@ -511,7 +575,7 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <body class="bg-light">
 <div class="container-fluid p-4">
     <div class="d-flex justify-content-between align-items-center mb-3">
-        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun <small class="text-muted fs-6">v3.23 Ultimate</small></h3>
+        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun <small class="text-muted fs-6">v4.0 Stable</small></h3>
         <span class="badge bg-secondary">{{ hostname }}</span>
     </div>
     
@@ -524,52 +588,51 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
                 </div>
                 <div id="ptpState" class="h3 mb-0">STOPPED</div>
                 <small id="serviceStateDetail" class="opacity-75">Service Inactive</small>
-                
-                <div class="ptp-time-display">
-                    <small class="d-block text-white-50" style="font-size:0.7rem">PTP HARDWARE TIME</small>
-                    <span id="ptpTimeVal">--</span>
-                </div>
+                <div class="ptp-time-display"><small class="d-block text-white-50" style="font-size:0.7rem">PTP HARDWARE TIME</small><span id="ptpTimeVal">--</span></div>
             </div>
         </div>
-
         <div class="col-md-4">
             <div class="card h-100 p-3 shadow-sm">
                 <div class="d-flex h-100 align-items-center">
                     <div class="w-50 text-center border-end">
-                        <div class="metric-label">Offset</div>
-                        <div id="offsetVal" class="metric-value text-primary">--</div>
-                        <small class="text-muted">ns</small>
+                        <div class="metric-label">Offset</div><div id="offsetVal" class="metric-value text-primary">--</div><small class="text-muted">ns</small>
                     </div>
                     <div class="w-50 text-center">
-                        <div class="metric-label">Path Delay</div>
-                        <div id="pathDelayVal" class="metric-value text-info">--</div>
-                        <small class="text-muted">ns</small>
+                        <div class="metric-label">Path Delay</div><div id="pathDelayVal" class="metric-value text-info">--</div><small class="text-muted">ns</small>
                     </div>
                 </div>
             </div>
         </div>
-
         <div class="col-md-4">
             <div class="card h-100 p-3 shadow-sm justify-content-center">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <small class="text-muted fw-bold">Grandmaster ID</small>
-                    <span id="stepsBadge" class="badge bg-secondary">Hops: --</span>
-                </div>
+                <div class="d-flex justify-content-between align-items-center mb-2"><small class="text-muted fw-bold">Grandmaster ID</small><span id="stepsBadge" class="badge bg-secondary">Hops: --</span></div>
                 <div id="gmId" class="h6 mb-0 text-break font-monospace text-center bg-light p-2 rounded">Scanning...</div>
             </div>
         </div>
     </div>
 
     <div class="row g-3 mb-3">
-        <div class="col-12">
-            <div class="card shadow-sm">
+        <div class="col-lg-8">
+            <div class="card shadow-sm h-100">
                 <div class="card-header d-flex justify-content-between py-1 bg-white align-items-center">
-                    <span class="fw-bold small text-muted">📈 Offset Stability (Last 60s)</span>
+                    <span class="fw-bold small text-muted">📈 Offset Stability</span>
                     <span class="badge bg-light text-dark border">RMS: <span id="rmsVal">--</span></span>
                 </div>
-                <div class="card-body p-2">
-                    <div class="chart-container">
-                        <canvas id="offsetChart"></canvas>
+                <div class="card-body p-2"><div class="chart-container"><canvas id="offsetChart"></canvas></div></div>
+            </div>
+        </div>
+        <div class="col-lg-4">
+            <div class="card shadow-sm h-100">
+                <div class="card-header fw-bold small text-muted d-flex justify-content-between align-items-center">
+                    <span>📡 PTP Client Radar</span>
+                    <span class="badge bg-primary" id="clientCount">0</span>
+                </div>
+                <div class="card-body p-0">
+                    <div style="height: 250px; overflow-y: auto;">
+                        <table class="table table-sm table-striped mb-0" style="font-size: 0.8rem;">
+                            <thead class="table-light sticky-top"><tr><th>IP Address</th><th>MAC</th><th>Last Seen</th></tr></thead>
+                            <tbody id="clientTableBody"><tr><td colspan="3" class="text-center text-muted">Waiting for data...</td></tr></tbody>
+                        </table>
                     </div>
                 </div>
             </div>
@@ -586,49 +649,42 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
                             <div class="col-8">
                                 <label class="form-label fw-bold small text-uppercase text-secondary">Clock Mode</label>
                                 <select class="form-select" id="clockMode" onchange="toggleMode()">
-                                    <option value="OC" selected>Ordinary Clock (Single Port)</option>
-                                    <option value="BC">Boundary Clock (Dual Port)</option>
+                                    <option value="OC" selected>Ordinary Clock (OC)</option>
+                                    <option value="BC">Boundary Clock (BC)</option>
                                 </select>
                             </div>
                             <div class="col-4">
-                                <label class="form-label fw-bold small text-uppercase text-secondary">Time Mode</label>
-                                <select class="form-select" id="timeStamping">
-                                    <option value="hardware" selected>Hardware</option>
-                                    <option value="software">Software</option>
+                                <label class="form-label fw-bold small text-uppercase text-secondary">Monitor</label>
+                                <select class="form-select" id="monitorMode">
+                                    <option value="disabled">OFF</option>
+                                    <option value="periodic" selected>Scan</option>
+                                    <option value="realtime">Real-Time</option>
                                 </select>
                             </div>
                         </div>
 
                         <div id="ocPanel" class="mb-3">
                             <label class="small text-muted">Network Interface</label>
-                            <select class="form-select" id="interface">
-                                <option value="" disabled selected>-- Select --</option>
-                                {% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}
-                            </select>
+                            <select class="form-select" id="interface"><option value="" disabled selected>-- Select --</option>{% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}</select>
                         </div>
                         <div id="bcPanel" class="mb-3 border p-2 rounded bg-white" style="display:none;">
                             <label class="small fw-bold text-primary mb-2 d-block">Boundary Clock Topology</label>
-                            <div class="mb-2"><label class="small text-muted">⬇️ Upstream (Slave/In)</label><select class="form-select form-select-sm" id="bcSlaveIf"><option value="" disabled selected>-- Select --</option>{% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}</select></div>
-                            <div class="mb-2"><label class="small text-muted">⬆️ Downstream (Master/Out)</label><select class="form-select form-select-sm" id="bcMasterIf"><option value="" disabled selected>-- Select --</option>{% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}</select></div>
+                            <div class="mb-2"><label class="small text-muted">⬇️ Upstream (Slave)</label><select class="form-select form-select-sm" id="bcSlaveIf"><option value="" disabled selected>-- Select --</option>{% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}</select></div>
+                            <div class="mb-2"><label class="small text-muted">⬆️ Downstream (Master)</label><select class="form-select form-select-sm" id="bcMasterIf"><option value="" disabled selected>-- Select --</option>{% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}</select></div>
                         </div>
                         
                         <div class="row g-2 mb-3 bg-light p-2 rounded border mx-0">
-                            <div class="col-8">
+                            <div class="col-6">
                                 <label class="small fw-bold text-muted">Clock Sync</label>
                                 <select class="form-select form-select-sm" id="syncMode">
-                                    <option value="none">None (Disabled)</option>
-                                    <option value="slave" selected>Follow PTP (Slave: PHC ➔ SYS)</option>
-                                    <option value="master">Force Master (Master: SYS ➔ PHC)</option>
+                                    <option value="none">Disabled</option>
+                                    <option value="slave" selected>Slave (PHC➔SYS)</option>
+                                    <option value="master">Master (SYS➔PHC)</option>
                                 </select>
                             </div>
-                            <div class="col-4">
-                                <label class="small fw-bold text-muted">Log Level</label>
-                                <select class="form-select form-select-sm" id="logLevel" title="Log Level">
-                                    <option value="6" selected>Info</option>
-                                    <option value="5">Notice</option>
-                                    <option value="4">Warn</option>
-                                    <option value="3">Error</option>
-                                </select>
+                            <div class="col-6">
+                                <label class="small fw-bold text-muted">Timestamping</label>
+                                <select class="form-select form-select-sm" id="timeStamping"><option value="hardware">Hardware</option><option value="software">Software</option></select>
                             </div>
                         </div>
 
@@ -637,7 +693,7 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
                             <label class="small text-muted">Profile Manager</label>
                             <div class="input-group input-group-sm">
                                 <select class="form-select" id="profileSelect" onchange="onUserSelectProfile()"></select>
-                                <button type="button" class="btn btn-outline-success" onclick="saveProfile()" title="Save as New">💾</button>
+                                <button type="button" class="btn btn-outline-success" onclick="saveProfile()" title="Save">💾</button>
                                 <button type="button" class="btn btn-outline-warning" id="btnRename" onclick="renameProfile()" disabled title="Rename">✏️</button>
                                 <button type="button" class="btn btn-outline-danger" id="btnDelete" onclick="deleteProfile()" disabled title="Delete">🗑️</button>
                             </div>
@@ -656,6 +712,9 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
                             <div class="col-6"><label class="small text-muted">Delay Req</label><input type="number" class="form-control form-control-sm" id="logMinDelayReqInterval"></div>
                             <div class="col-6"><label class="small text-muted">Receipt T/O</label><input type="number" class="form-control form-control-sm" id="announceReceiptTimeout"></div>
                         </div>
+                        
+                        <input type="hidden" id="logLevel" value="6">
+
                         <div class="d-grid gap-2"><button type="button" onclick="applyConfig()" class="btn btn-primary btn-sm fw-bold">Apply & Restart</button><button type="button" onclick="stopService()" class="btn btn-danger btn-sm">Stop</button></div>
                     </form>
                 </div>
@@ -672,10 +731,11 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 <script>
     let profiles={}; 
     const FIELDS=['timeStamping','domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout', 'syncMode', 'logLevel'];
-    const EXT_FIELDS=['profileSelect','clockMode','interface','bcSlaveIf','bcMasterIf']; 
+    const EXT_FIELDS=['profileSelect','clockMode','interface','bcSlaveIf','bcMasterIf', 'monitorMode']; 
     let offsetChart = null;
+    let isUserInteractingLogs = false;
 
-    function init(){ initChart(); fetchProfiles(); setInterval(updateStatus, 1000); setInterval(updateLogs, 2500); }
+    function init(){ initChart(); fetchProfiles(); setInterval(updateStatus, 1000); setInterval(updateLogs, 2500); setInterval(updateClients, 3000); }
 
     function saveConfigCache() {
         let cache = {};
@@ -779,6 +839,8 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
         else{ d.interface=document.getElementById('interface').value; if(!d.interface){ alert("Select Interface"); return; } }
         if(!confirm("Apply & Restart?")) return;
         FIELDS.forEach(f=>{ let el=document.getElementById(f); d[f] = (el.type === 'checkbox') ? el.checked : el.value; });
+        // Manually add monitorMode
+        d['monitorMode'] = document.getElementById('monitorMode').value;
         saveConfigCache(); 
         fetch('/api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)}).then(r=>r.json()).then(r=>{ if(r.status==='success') alert("✅ Success!"); else alert("❌ "+r.message); }).catch(e=>alert("Error:"+e));
     }
@@ -833,9 +895,94 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
         }).catch(()=>{}); 
     }
 
-    function updateLogs(){ fetch('/api/logs').then(r=>r.json()).then(d=>{ const w=document.getElementById('logWindow'); if(w){ w.innerText=d.logs; w.scrollTop=w.scrollHeight; } }).catch(()=>{}); }
-    function saveProfile(){ let n=prompt("Name:"); if(n){ let c={}; FIELDS.forEach(f=>{ let el=document.getElementById(f); c[f]=(el.type==='checkbox')?el.checked:el.value; }); fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,config:c})}).then(()=>fetchProfiles()); } }
-    function stopService(){ if(confirm("Stop?")) fetch('/api/stop',{method:'POST'}); }
+    function updateClients(){
+        fetch('/api/clients').then(r=>r.json()).then(d=>{
+            const tbody = document.getElementById('clientTableBody');
+            document.getElementById('clientCount').innerText = d.length;
+            if(d.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No clients detected</td></tr>';
+            } else {
+                let html = '';
+                const now = Date.now() / 1000;
+                d.forEach(c => {
+                    const ago = Math.round(now - c.last_seen);
+                    html += `<tr><td>${c.ip}</td><td class="text-muted small">${c.mac}</td><td><span class="badge bg-success">${ago}s ago</span></td></tr>`;
+                });
+                tbody.innerHTML = html;
+            }
+        }).catch(()=>{});
+    }
+
+   function updateLogs(){ 
+    const w = document.getElementById('logWindow');
+    if(!w) return;
+
+    // 1. 检测用户是否正在选中文本，如果是，则跳过本次更新（防打扰）
+    if (window.getSelection().toString().length > 0) return;
+
+    // 2. 检测用户是否已经手动滚动到了上方
+    // 允许 10px 的误差
+    const isAtBottom = (w.scrollHeight - w.scrollTop - w.clientHeight) < 20;
+
+    fetch('/api/logs').then(r=>r.json()).then(d=>{ 
+        // 只有内容变了才更新，减少DOM操作（可选，但简单起见直接赋值）
+        if (w.innerText !== d.logs) {
+            w.innerText = d.logs; 
+            // 3. 只有当用户原本就在底部时，才自动滚动到底部
+            if(isAtBottom) {
+                w.scrollTop = w.scrollHeight; 
+            }
+        }
+    }).catch(()=>{}); 
+}
+
+    function saveProfile() {
+        let n = prompt("Name:");
+        if (n) {
+            let c = {};
+            FIELDS.forEach(f => {
+                let el = document.getElementById(f);
+                c[f] = (el.type === 'checkbox') ? el.checked : el.value;
+            });
+            fetch('/api/profiles', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: n, config: c})
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(() => fetchProfiles())
+            .catch(error => {
+                console.error('Error saving profile:', error);
+                alert('Failed to save profile: ' + error.message);
+            });
+        }
+    }
+
+    function stopService() {
+        if (confirm("Stop?")) {
+            fetch('/api/stop', {
+                method: 'POST'
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Network response was not ok');
+                }
+                return response.json();
+            })
+            .then(() => {
+                alert('Service stopped successfully');
+            })
+            .catch(error => {
+                console.error('Error stopping service:', error);
+                alert('Failed to stop service: ' + error.message);
+            });
+        }
+    }
     
     init();
 </script>
@@ -844,7 +991,7 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
 EOF
 
 # --- 8. Python 环境 ---
-echo "[6/9] 配置环境..."
+echo "[6/8] 配置 Python 环境..."
 cd "$INSTALL_DIR"
 rm -rf .venv
 python3 -m venv .venv
@@ -852,7 +999,7 @@ python3 -m venv .venv
 ./.venv/bin/pip install -r requirements.txt
 
 # --- 9. 系统服务 ---
-echo "[7/9] 注册服务..."
+echo "[7/8] 注册 Systemd 服务..."
 cat << 'EOF' > /etc/systemd/system/ptp4l.service
 [Unit]
 Description=Precision Time Protocol (PTP) service
@@ -873,14 +1020,14 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/ptp-web
-ExecStart=/opt/ptp-web/.venv/bin/gunicorn --workers 4 --bind 0.0.0.0:8080 app:app
+ExecStart=/opt/ptp-web/.venv/bin/gunicorn --workers 1 --threads 4 --bind 0.0.0.0:8080 app:app
 Restart=always
 [Install]
 WantedBy=multi-user.target
 EOF
 
 # --- 10. 防火墙 ---
-echo "[8/9] 防火墙放行..."
+echo "[8/8] 配置防火墙..."
 if command -v firewall-cmd &> /dev/null; then
     firewall-cmd --permanent --add-port=8080/tcp >/dev/null 2>&1 || true
     firewall-cmd --permanent --add-port=319/udp >/dev/null 2>&1 || true
@@ -889,7 +1036,7 @@ if command -v firewall-cmd &> /dev/null; then
 fi
 
 # --- 11. 启动 ---
-echo "[9/9] 启动..."
+echo "启动服务..."
 systemctl daemon-reload
 systemctl enable ptp4l ptp-web
 systemctl restart ptp-web
@@ -901,7 +1048,7 @@ else
 fi
 
 echo "=========================================================="
-echo "   ✅ PTP4L 控制台 (v3.23 Ultimate) 已就绪！"
-echo "   👉 请在网页端重新点击【Apply & Restart】"
+echo "   ✅ PTP4L 控制台 (v4.0 Stable) 已部署完毕！"
 echo "   👉 访问: http://$IP:8080"
+echo "   👉 重要: 请在网页点击【Apply & Restart】以初始化配置"
 echo "=========================================================="
