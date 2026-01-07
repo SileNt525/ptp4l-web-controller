@@ -19,9 +19,19 @@ if [ "$EUID" -ne 0 ]; then
   exit 1
 fi
 
-echo "🚀 开始部署 PTP4L Web Controller (v6.1 Stable)..."
+echo "🚀 开始部署 PTP4L Web Controller (v4.0 Stable)..."
+# --- 1.1 网络环境检测 ---
+echo "[0/8] 检测网络连接..."
+IS_ONLINE=false
+if timeout 2 ping -c 1 -W 1 223.5.5.5 &> /dev/null || timeout 2 curl --head --silent --fail http://www.baidu.com &> /dev/null; then
+  IS_ONLINE=true
+  echo "   ✅ 网络连接正常 (Online Mode)"
+else
+  echo "   ⚠️ 无互联网连接 (Offline Mode)"
+fi
 
-# --- 2. 紧急时间校准 ---
+
+# --- 2. 时间校准 ---
 echo "[1/8] 检查系统时间..."
 IS_LXC=false
 if command -v systemd-detect-virt &> /dev/null; then
@@ -33,6 +43,8 @@ fi
 
 if [ "$IS_LXC" = true ]; then
     echo "   ⚠️ 检测到 LXC 容器环境，跳过时间校准。"
+elif [ "$IS_ONLINE" = false ]; then
+    echo "   ⚠️ 离线模式，跳过网络时间校准。"
 else
     if command -v curl &> /dev/null; then
         NET_TIME=$(curl -I --insecure --connect-timeout 3 http://www.baidu.com 2>/dev/null | grep ^Date: | sed 's/Date: //g')
@@ -55,13 +67,40 @@ rm -f /usr/local/bin/ptp-safe-wrapper.sh
 systemctl daemon-reload
 
 # 基础依赖安装 (包含 tcpdump)
+# 基础依赖安装 (包含 tcpdump)
 if [ -f /etc/os-release ]; then . /etc/os-release; fi
-COMMON_PKGS="linuxptp ethtool python3 tcpdump"
-if [[ "$ID" =~ (fedora|rhel|centos) ]]; then
-    dnf install -y $COMMON_PKGS python3-pip curl
-elif [[ "$ID" =~ (debian|ubuntu) ]]; then
-    export DEBIAN_FRONTEND=noninteractive
-    apt update && apt install -y $COMMON_PKGS python3-venv python3-pip curl
+COMMON_PKGS="ptp4l ethtool python3 tcpdump"
+MISSING_PKGS=""
+
+# 检查缺失的包
+for pkg in $COMMON_PKGS; do
+    # 映射包名到二进制名
+    bin_name=$pkg
+    if [ "$pkg" == "linuxptp" ] || [ "$pkg" == "ptp4l" ]; then bin_name="ptp4l"; fi
+    if [ "$pkg" == "python3" ]; then bin_name="python3"; fi
+    
+    if ! command -v $bin_name &> /dev/null; then
+         MISSING_PKGS="$MISSING_PKGS $pkg"
+    fi
+done
+
+if [ -n "$MISSING_PKGS" ]; then
+    if [ "$IS_ONLINE" = false ]; then
+        echo "❌ 错误：离线模式下检测到缺失依赖: $MISSING_PKGS"
+        echo "   请先手动挂载 ISO 镜像或安装 .rpm/.deb 包，然后重试。"
+        exit 1
+    else
+        echo "   📥 正在下载并安装依赖: $MISSING_PKGS ..."
+        INSTALL_PKGS="linuxptp ethtool python3 tcpdump" 
+        if [[ "$ID" =~ (fedora|rhel|centos) ]]; then
+            dnf install -y $INSTALL_PKGS python3-pip curl
+        elif [[ "$ID" =~ (debian|ubuntu) ]]; then
+            export DEBIAN_FRONTEND=noninteractive
+            apt update && apt install -y $INSTALL_PKGS python3-venv python3-pip curl
+        fi
+    fi
+else
+    echo "   ✅ 基础依赖检查通过，跳过安装。"
 fi
 
 # --- 4. 建立目录结构 ---
@@ -161,7 +200,7 @@ USER_PROFILES_FILE = os.path.join(BASE_DIR, "user_profiles.json")
 STATUS_CACHE = { "time": 0, "data": None }
 
 # --- Client Monitoring Globals ---
-MONITOR_CONFIG = { "mode": "disabled", "interface": None }
+MONITOR_CONFIG = { "mode": "disabled", "interfaces": [] }
 CLIENTS = {} # { ip: { mac: str, last_seen: float } }
 CLIENTS_LOCK = threading.Lock()
 
@@ -197,45 +236,94 @@ def validate_interface(iface):
     except:
         return False
 
-# --- Monitor Logic (Production Grade) ---
-def monitor_thread_func():
+# --- Monitor Logic (Multi-Interface) ---
+def get_ip_address(iface):
+    try:
+        out = subprocess.check_output(["ip", "-4", "addr", "show", iface], text=True)
+        m = re.search(r'inet\s+(\d+\.\d+\.\d+\.\d+)', out)
+        return m.group(1) if m else None
+    except: return None
+
+def monitor_worker(iface):
     global CLIENTS
     proc = None
+    my_ip = get_ip_address(iface)
+    
     while True:
-        mode = MONITOR_CONFIG["mode"]
-        iface = MONITOR_CONFIG["interface"]
-
-        if mode == "disabled" or not iface:
+        # Check global config (simple polling)
+        if MONITOR_CONFIG["mode"] == "disabled" or iface not in MONITOR_CONFIG["interfaces"]:
             if proc:
                 try: proc.terminate(); proc.wait()
                 except: pass
                 proc = None
-            time.sleep(2)
+            time.sleep(1)
+            # If interface was removed from config, exit this worker
+            if iface not in MONITOR_CONFIG["interfaces"]: return
             continue
-        
+
         if not proc or proc.poll() is not None:
+            # Capture both Sync/FollowUp and DelayReq to see EVERYONE (GM + Clients)
             cmd = ["tcpdump", "-i", iface, "-nn", "-l", "-e", "dst port 319"]
             try:
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
-            except Exception as e:
+            except:
                 time.sleep(5)
                 continue
 
         try:
             line = proc.stdout.readline()
             if not line:
-                time.sleep(0.1) 
+                time.sleep(0.1)
                 continue
-
+            
+            # Simple interaction update
             current_time = time.time()
+            # Regex: SourceMAC > ... SourceIP.319 >
+            # Note: tcpdump format varies slightly by version, but usually:
+            # HH:MM:SS.us MAC1 > MAC2, ethertype IPv4 (0x0800), length 76: 192.168.1.55.319 > 224.0.1.129.319: UDP, length 44
+            # We want source IP.
             m = re.search(r'([0-9a-fA-F:]{17}) > .*? (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\.319 >', line)
+            
+            # If standard regex failed, try alternative format (sometimes source port is not 319)
+            # e.g. 192.168.1.55.56789 > 224.0.1.129.319
+            if not m:
+                m = re.search(r'([0-9a-fA-F:]{17}) > .*? (\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\.(\d+) > .*?\.319', line)
+
             if m:
                 mac = m.group(1)
                 ip = m.group(2)
+                # Filter out our own MAC/IP if possible? (Hard without netifaces)
+                # But seeing "Self" in radar is sometimes useful debugging.
+                is_self = (ip == my_ip)
                 with CLIENTS_LOCK:
-                    CLIENTS[ip] = { "mac": mac, "last_seen": current_time }
-        except Exception as e:
+                    # Append interface name to info for UI
+                    CLIENTS[ip] = { "mac": mac, "last_seen": current_time, "iface": iface, "is_self": is_self }       
+        except:
             time.sleep(1)
+
+def monitor_manager_thread():
+    # Spawns workers for interfaces in MONITOR_CONFIG
+    active_workers = {} # iface -> thread
+    while True:
+        target_ifaces = MONITOR_CONFIG.get("interfaces", [])
+        mode = MONITOR_CONFIG.get("mode", "disabled")
+        
+        if mode == "disabled":
+             target_ifaces = []
+
+        # Start new workers
+        for iface in target_ifaces:
+                if iface not in active_workers or not active_workers[iface].is_alive():
+                    # Refresh IP in case it changed
+                    t = threading.Thread(target=monitor_worker, args=(iface,), daemon=True)
+                    t.start()
+                    active_workers[iface] = t
+        
+        # Prune old workers (logic handled inside worker loop checking config)
+        time.sleep(2)
+
+# Start Manager
+threading.Thread(target=monitor_manager_thread, daemon=True).start()
 
 def cleanup_thread():
     while True:
@@ -246,7 +334,7 @@ def cleanup_thread():
             for ip in to_remove:
                 del CLIENTS[ip]
 
-threading.Thread(target=monitor_thread_func, daemon=True).start()
+
 threading.Thread(target=cleanup_thread, daemon=True).start()
 
 def get_current_interface():
@@ -315,6 +403,122 @@ def get_pmc_dict():
 
     if run_cmd_safe(["pgrep", "-f", "phc2sys"]): data["phc2sys_state"] = "RUNNING"
     return data
+
+def get_bmca_info():
+    # Helper to parse hex/int
+    def p_val(txt, key, type_func=lambda x: int(x, 0)):
+        # Match "key value"
+        m = re.search(f'{key}\\s+([\\w\\d\\.\\-]+)', txt)
+        if not m: return None
+        try: return type_func(m.group(1))
+        except: return None
+
+    # 1. Get ALL Data in one go (More efficient)
+    cmd = ["pmc", "-u", "-b", "0", "GET DEFAULT_DATA_SET", "GET PARENT_DATA_SET", "GET TIME_PROPERTIES_DATA_SET"]
+    out_all = run_cmd_safe(cmd)
+    
+    # Check if we got valid output
+    if "RESPONSE" not in out_all:
+        return { "local": {}, "gm": {}, "flags": {}, "decision": [], "winner": "unknown", "error": "No PTP response" }
+
+    local = {
+        "priority1": p_val(out_all, "priority1"),
+        "class": p_val(out_all, "clockClass"),
+        "accuracy": p_val(out_all, "clockAccuracy"), 
+        "variance": p_val(out_all, "offsetScaledLogVariance"),
+        "priority2": p_val(out_all, "priority2"),
+        "id": "", 
+    }
+    # Local ID usually appears under generic clockIdentity or PTP port identity
+    # In bundled output, we need to be careful. GET DEFAULT_DATA_SET response usually has clockIdentity.
+    # We'll look for the first clockIdentity which is usually local.
+    m_id = re.search(r'clockIdentity\s+([0-9a-fA-F\.]+)', out_all)
+    if m_id: local["id"] = m_id.group(1)
+
+    gm = {
+        "priority1": p_val(out_all, "grandmasterPriority1"),
+        "class": p_val(out_all, "grandmasterClockQuality.clockClass"),
+        "accuracy": p_val(out_all, "grandmasterClockQuality.clockAccuracy"),
+        "variance": p_val(out_all, "grandmasterClockQuality.offsetScaledLogVariance"),
+        "priority2": p_val(out_all, "grandmasterPriority2"),
+        "id": ""
+    }
+    m_gmid = re.search(r'grandmasterIdentity\s+([0-9a-fA-F\.]+)', out_all)
+    if m_gmid: gm["id"] = m_gmid.group(1)
+
+    flags = {
+        "currentUtcOffset": p_val(out_all, "currentUtcOffset"),
+        "leap61": p_val(out_all, "leap61"),
+        "leap59": p_val(out_all, "leap59"),
+        "currentUtcOffsetValid": p_val(out_all, "currentUtcOffsetValid"),
+        "ptpTimescale": p_val(out_all, "ptpTimescale"),
+        "timeTraceable": p_val(out_all, "timeTraceable"),
+        "frequencyTraceable": p_val(out_all, "frequencyTraceable"),
+        "timeSource": p_val(out_all, "timeSource")
+    }
+
+    # 4. Analyze Winner
+    decision = []
+    
+    # 辅助比较函数
+    def compare(tag, l_val, r_val, lower_is_better=True):
+        if l_val is None or r_val is None: return "draw"
+        l_num = l_val; r_num = r_val
+        if l_num == r_num: return "draw"
+        if lower_is_better: return "local" if l_num < r_num else "remote"
+        else: return "local" if l_num > r_num else "remote"
+
+    winner = "unknown"
+    
+    # 如果 GM ID 就是 Local ID，那是自己赢了
+    if local.get('id') and gm.get('id') and local['id'] == gm['id']:
+        winner = "local"
+        decision.append({"step": "Identity", "reason": "Local Clock is Grandmaster", "result": "win"})
+    else:
+        # 逐步比较
+        steps = [
+            ("Priority 1", "priority1", True),
+            ("Class", "class", True),
+            ("Accuracy", "accuracy", True),
+            ("Variance", "variance", True),
+            ("Priority 2", "priority2", True)
+        ]
+        
+        determined = False
+        for name, key, lower_better in steps:
+            l_v = local.get(key); r_v = gm.get(key)
+            res = compare(name, l_v, r_v, lower_better)
+            
+            # Use raw strings for display if needed, but here we have ints.
+            # Convert hex fields back to hex string for display if they are typical hex fields
+            l_disp = f"0x{l_v:02x}" if key in ['accuracy', 'variance'] and l_v is not None else l_v
+            r_disp = f"0x{r_v:02x}" if key in ['accuracy', 'variance'] and r_v is not None else r_v
+            
+            if res == "draw":
+                decision.append({"step": name, "l": l_disp, "r": r_disp, "result": "tie"})
+            elif res == "local":
+                decision.append({"step": name, "l": l_disp, "r": r_disp, "result": "win"})
+                winner = "local"; determined = True; break
+            else:
+                decision.append({"step": name, "l": l_disp, "r": r_disp, "result": "lose"})
+                winner = "remote"; determined = True; break
+        
+        if not determined:
+            # Final tiebreaker: ID (Low is better)
+            # Remove dots for hex comparison
+            l_id_raw = local.get("id", "").replace(".", "")
+            r_id_raw = gm.get("id", "").replace(".", "")
+            # Convert large hex ID to int for comparison
+            try:
+                l_int = int(l_id_raw, 16); r_int = int(r_id_raw, 16)
+                res = compare("Identity", l_int, r_int, True)
+            except: res = "draw"
+            
+            if res == "local": winner="local"; decision.append({"step": "Identity", "result": "win (lower ID)"})
+            else: winner="remote"; decision.append({"step": "Identity", "result": "lose (higher ID)"})
+
+    return { "local": local, "gm": gm, "flags": flags, "decision": decision, "winner": winner }
+
 
 def load_user_profiles():
     if os.path.exists(USER_PROFILES_FILE):
@@ -455,7 +659,11 @@ def apply_config():
 
     monitor_mode = req.get('monitorMode', 'disabled')
     MONITOR_CONFIG["mode"] = monitor_mode
-    MONITOR_CONFIG["interface"] = req.get('bcMasterIf') if mode == 'BC' else target_if
+    # Populate interfaces list based on mode
+    if mode == 'BC':
+        MONITOR_CONFIG["interfaces"] = [x for x in [req.get('bcSlaveIf'), req.get('bcMasterIf')] if x]
+    else:
+        MONITOR_CONFIG["interfaces"] = [target_if] if target_if else []
     
     ts_mode = req.get('timeStamping', 'hardware')
     sync_mode = req.get('syncMode')
@@ -528,7 +736,7 @@ def get_clients():
     with CLIENTS_LOCK:
         clients_list = []
         for ip, info in CLIENTS.items():
-            clients_list.append({ "ip": ip, "mac": info["mac"], "last_seen": info["last_seen"] })
+            clients_list.append({ "ip": ip, "mac": info["mac"], "last_seen": info["last_seen"], "iface": info.get("iface", "?"), "is_self": info.get("is_self", False) })
         return jsonify(clients_list)
 
 @app.route('/api/logs')
@@ -540,6 +748,11 @@ def stop_service():
     subprocess.run(["systemctl", "stop", "ptp4l"], check=False)
     subprocess.run(["systemctl", "stop", "phc2sys-custom"], check=False)
     return jsonify({"status": "success"})
+
+@app.route('/api/bmca')
+def get_bmca_api():
+    return jsonify(get_bmca_info())
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
@@ -555,6 +768,8 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PTP Controller</title>
+    <title>PTP Controller</title>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
@@ -612,6 +827,46 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
     </div>
 
     <div class="row g-3 mb-3">
+        <!-- BMCA Visualizer -->
+        <div class="col-12">
+            <div class="card shadow-sm">
+                <div class="card-header bg-white d-flex justify-content-between align-items-center" style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#bmcaBody">
+                    <span class="fw-bold small text-muted">🕸️ BMCA Decision Analyzer</span>
+                    <span class="badge bg-light text-dark border" id="bmcaSummary">Loading...</span>
+                </div>
+                <div id="bmcaBody" class="collapse show">
+                    <div class="card-body">
+                        <div class="row">
+                            <div class="col-md-8">
+                                <div class="table-responsive">
+                                    <table class="table table-sm table-bordered text-center align-middle" style="font-size: 0.85rem;">
+                                        <thead class="table-light">
+                                            <tr>
+                                                <th style="width:20%">Check</th>
+                                                <th style="width:30%" class="text-primary">Local (Me)</th>
+                                                <th style="width:10%">Vs</th>
+                                                <th style="width:30%" class="text-danger">Current GM</th>
+                                                <th style="width:10%">Result</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="bmcaTable"></tbody>
+                                    </table>
+                                </div>
+                            </div>
+                            <div class="col-md-4">
+                                <div class="p-2 border rounded bg-light h-100">
+                                    <h6 class="small fw-bold text-muted mb-2">ST 2059-2 Flags</h6>
+                                    <div id="ptpFlags" class="d-flex flex-wrap gap-2"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row g-3 mb-3">
         <div class="col-lg-8">
             <div class="card shadow-sm h-100">
                 <div class="card-header d-flex justify-content-between py-1 bg-white align-items-center">
@@ -630,8 +885,8 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
                 <div class="card-body p-0">
                     <div style="height: 250px; overflow-y: auto;">
                         <table class="table table-sm table-striped mb-0" style="font-size: 0.8rem;">
-                            <thead class="table-light sticky-top"><tr><th>IP Address</th><th>MAC</th><th>Last Seen</th></tr></thead>
-                            <tbody id="clientTableBody"><tr><td colspan="3" class="text-center text-muted">Waiting for data...</td></tr></tbody>
+                            <thead class="table-light sticky-top"><tr><th>IP Address</th><th>MAC</th><th>Iface</th><th>Last Seen</th></tr></thead>
+                            <tbody id="clientTableBody"><tr><td colspan="4" class="text-center text-muted">Waiting for data...</td></tr></tbody>
                         </table>
                     </div>
                 </div>
@@ -713,7 +968,18 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
                             <div class="col-6"><label class="small text-muted">Receipt T/O</label><input type="number" class="form-control form-control-sm" id="announceReceiptTimeout"></div>
                         </div>
                         
-                        <input type="hidden" id="logLevel" value="6">
+                        <div class="row g-2 mb-3">
+                            <div class="col-12">
+                                <label class="small text-muted">Log Verbosity</label>
+                                <select class="form-select form-select-sm" id="logLevel">
+                                    <option value="3">Error Only (3)</option>
+                                    <option value="4">Warning (4)</option>
+                                    <option value="5">Notice (5)</option>
+                                    <option value="6" selected>Info (6) - Default</option>
+                                    <option value="7">Debug (7) - High Load</option>
+                                </select>
+                            </div>
+                        </div>
 
                         <div class="d-grid gap-2"><button type="button" onclick="applyConfig()" class="btn btn-primary btn-sm fw-bold">Apply & Restart</button><button type="button" onclick="stopService()" class="btn btn-danger btn-sm">Stop</button></div>
                     </form>
@@ -735,7 +1001,87 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
     let offsetChart = null;
     let isUserInteractingLogs = false;
 
-    function init(){ initChart(); fetchProfiles(); setInterval(updateStatus, 1000); setInterval(updateLogs, 2500); setInterval(updateClients, 3000); }
+    function init(){ initChart(); fetchProfiles(); setInterval(updateStatus, 1000); setInterval(updateLogs, 2500); setInterval(updateClients, 3000); setInterval(updateBmca, 2000); }
+
+    function updateBmca() {
+         fetch('/api/bmca').then(r=>r.json()).then(d => {
+             // 1. Update Decision Table
+             const tbody = document.getElementById('bmcaTable');
+             let html = "";
+             
+             if (d.decision.length === 0) {
+                 html = '<tr><td colspan="5" class="text-center text-muted">Waiting for PMC data...</td></tr>';
+                 document.getElementById('bmcaSummary').innerText = "Analyzing...";
+                 document.getElementById('bmcaSummary').className = "badge bg-secondary text-white";
+             } else {
+                 d.decision.forEach(step => {
+                    let lVal = (step.l !== undefined && step.l !== null) ? step.l : "--";
+                    let rVal = (step.r !== undefined && step.r !== null) ? step.r : "--";
+                    let rowClass = "";
+                    let resBadge = "";
+                    
+                    if (step.result === "win") {
+                        rowClass = "table-success";
+                        resBadge = '<span class="badge bg-success">WIN</span>';
+                    } else if (step.result === "lose") {
+                        rowClass = "table-danger";
+                        resBadge = '<span class="badge bg-danger">LOSE</span>';
+                    } else if (step.result === "tie") {
+                        resBadge = '<span class="badge bg-light text-dark border">TIE</span>';
+                    }
+                    
+                    // Special case for Identity win by default
+                    if (step.step === "Identity" && step.result === "win" && step.reason) {
+                         html += `<tr class="table-success"><td class="fw-bold">Identity</td><td colspan="3" class="small">${step.reason}</td><td><span class="badge bg-success">GM</span></td></tr>`;
+                    } else {
+                         html += `<tr class="${rowClass}"><td class="fw-bold small">${step.step}</td><td>${lVal}</td><td class="text-muted small">vs</td><td>${rVal}</td><td>${resBadge}</td></tr>`;
+                    }
+                 });
+                 
+                 // Summary Badge
+                 const sumBad = document.getElementById('bmcaSummary');
+                 if (d.winner === 'local') {
+                     sumBad.innerText = "Local is Master"; sumBad.className = "badge bg-success text-white";
+                 } else if (d.winner === 'remote') {
+                     sumBad.innerText = "Remote is Master"; sumBad.className = "badge bg-primary text-white";
+                 } else {
+                     sumBad.innerText = "Unknown";
+                 }
+             }
+             tbody.innerHTML = html;
+
+             // 2. Update Flags (ST 2059-2 Critical)
+             const flagsDiv = document.getElementById('ptpFlags');
+             const f = d.flags;
+             // Define flags to show: (key, label, expected_val)
+             const flagMap = [
+                 {k: 'ptpTimescale', l: 'PTP Scale', good: 1}, 
+                 {k: 'timeTraceable', l: 'Time Trc', good: 1},
+                 {k: 'frequencyTraceable', l: 'Freq Trc', good: 1},
+                 {k: 'currentUtcOffsetValid', l: 'UTC Valid', good: 1},
+                 {k: 'leap59', l: 'Leap59', good: 0},
+                 {k: 'leap61', l: 'Leap61', good: 0}
+             ];
+             
+             let fHtml = "";
+             flagMap.forEach(item => {
+                 const val = f[item.k];
+                 let color = "bg-secondary";
+                 if (val !== undefined && val !== null) {
+                     // ST2059: PTP=1, TT=1, FT=1, UTCV=1 are good. Leaps are usually 0.
+                     if (item.good === 1) color = (val == 1) ? "bg-success" : "bg-danger";
+                     else color = (val == 1) ? "bg-warning text-dark" : "bg-success"; 
+                     
+                     fHtml += `<span class="badge ${color}" title="${item.k}">${item.l}: ${val}</span>`;
+                 }
+             });
+             // Add UTC Offset manually
+             if(f.currentUtcOffset !== undefined) fHtml += `<span class="badge bg-info text-dark">Offset: ${f.currentUtcOffset}s</span>`;
+             
+             flagsDiv.innerHTML = fHtml;
+             
+         }).catch(()=>{});
+    }
 
     function saveConfigCache() {
         let cache = {};
@@ -899,17 +1245,23 @@ cat << 'EOF' > "$INSTALL_DIR/templates/index.html"
         fetch('/api/clients').then(r=>r.json()).then(d=>{
             const tbody = document.getElementById('clientTableBody');
             document.getElementById('clientCount').innerText = d.length;
-            if(d.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="3" class="text-center text-muted">No clients detected</td></tr>';
-            } else {
-                let html = '';
-                const now = Date.now() / 1000;
-                d.forEach(c => {
-                    const ago = Math.round(now - c.last_seen);
-                    html += `<tr><td>${c.ip}</td><td class="text-muted small">${c.mac}</td><td><span class="badge bg-success">${ago}s ago</span></td></tr>`;
-                });
-                tbody.innerHTML = html;
-            }
+                if(d.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No clients detected</td></tr>';
+                } else {
+                    let html = '';
+                    const now = Date.now() / 1000;
+                    d.forEach(c => {
+                        const ago = Math.round(now - c.last_seen);
+                        let ipHtml = c.ip;
+                        let rowClass = "";
+                        if (c.is_self) {
+                             ipHtml += ' <span class="badge bg-info text-dark" style="font-size: 0.7em;">ME</span>';
+                             rowClass = "table-info";
+                        }
+                        html += `<tr class="${rowClass}"><td>${ipHtml}</td><td class="text-muted small">${c.mac}</td><td><span class="badge bg-secondary">${c.iface}</span></td><td><span class="badge bg-success">${ago}s ago</span></td></tr>`;
+                    });
+                    tbody.innerHTML = html;
+                }
         }).catch(()=>{});
     }
 
@@ -993,10 +1345,35 @@ EOF
 # --- 8. Python 环境 ---
 echo "[6/8] 配置 Python 环境..."
 cd "$INSTALL_DIR"
-rm -rf .venv
-python3 -m venv .venv
-./.venv/bin/pip install --upgrade pip
-./.venv/bin/pip install -r requirements.txt
+
+if [ "$IS_ONLINE" = true ]; then
+    # 在线模式：强制重建环境以确保最新
+    rm -rf .venv
+    python3 -m venv .venv
+    ./.venv/bin/pip install --upgrade pip
+    ./.venv/bin/pip install -r requirements.txt
+else
+    # 离线模式：检查现有的 venv
+    if [ -f ".venv/bin/python" ] && ./.venv/bin/python -c "import flask, gunicorn" &> /dev/null; then
+        echo "   ✅ 离线模式：检测到有效的 Python 环境，跳过安装。"
+    else
+        echo "   ⚠️ 离线模式：尝试使用系统 Python 环境..."
+        # 如果没有 venv，尝试创建一个使用 --system-site-packages 的 venv (假设已预装)
+        rm -rf .venv
+        python3 -m venv --system-site-packages .venv
+        
+        if ./.venv/bin/python -c "import flask" &> /dev/null; then
+             echo "   ✅ 使用系统 Python 库成功。"
+        else
+             echo "❌ 错误：离线模式下无法建立 Python 运行时。"
+             echo "   系统未检测到 .venv 目录，且系统 Python 未安装 Flask/Gunicorn。"
+             echo "   解决方案："
+             echo "   1. 找一台联网机器运行此脚本生成 .venv 目录，然后打包 .venv 拷贝到此服务器。"
+             echo "   2. 或者手动安装 python3-flask, python3-gunicorn 的 rpm/deb 包。"
+             exit 1
+        fi
+    fi
+fi
 
 # --- 9. 系统服务 ---
 echo "[7/8] 注册 Systemd 服务..."
