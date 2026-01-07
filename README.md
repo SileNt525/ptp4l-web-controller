@@ -1,7 +1,11 @@
 # PTP4L Web Controller (v4.0 Stable)
 
 专为广播电视工程师设计的 Linux PTP (Precision Time Protocol) 管理面板。针对 SMPTE ST 2110 和 AES67 场景进行了深度优化。
+
 A lightweight PTP management dashboard designed for Broadcast Engineers. deeply optimized for SMPTE ST 2110 and AES67 workflows.
+
+<img width="2498" height="1094" alt="image" src="https://github.com/user-attachments/assets/831805c6-df25-4d77-a1fa-e39eeeb8173c" />
+
 
 ## ✨ 核心特性 (Key Features)
 
