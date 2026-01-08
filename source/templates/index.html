@@ -1,356 +1,699 @@
 <!DOCTYPE html>
 <html lang="zh">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PTP Controller</title>
+    <title>PTP Controller</title>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
-        .status-box { padding: 15px; border-radius: 8px; color: white; height: 100%; display: flex; flex-direction: column; justify-content: center; transition: background-color 0.3s; }
-        .bg-running { background-color: #198754; } 
-        .bg-stopped { background-color: #dc3545; }
-        .bg-slave { background-color: #0d6efd; }
-        .bg-master { background-color: #6610f2; }
-        .bg-syncing { background-color: #fd7e14; }
-        .bg-passive { background-color: #6c757d; }
-        #logWindow { background-color: #212529; color: #0f0; height: 350px; overflow-y: auto; padding: 10px; font-family: monospace; font-size: 0.8rem; }
-        .metric-label { font-size: 0.75rem; text-transform: uppercase; color: #6c757d; font-weight: bold; }
-        .metric-value { font-size: 1.5rem; font-weight: bold; }
-        .chart-container { position: relative; height: 250px; width: 100%; }
-        .ptp-time-display { background: rgba(0,0,0,0.2); padding: 5px; border-radius: 4px; margin-top: 10px; font-family: monospace; font-size: 0.9rem; text-align: center;}
+        .status-box {
+            padding: 15px;
+            border-radius: 8px;
+            color: white;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            transition: background-color 0.3s;
+        }
+
+        .bg-running {
+            background-color: #198754;
+        }
+
+        .bg-stopped {
+            background-color: #dc3545;
+        }
+
+        .bg-slave {
+            background-color: #0d6efd;
+        }
+
+        .bg-master {
+            background-color: #6610f2;
+        }
+
+        .bg-syncing {
+            background-color: #fd7e14;
+        }
+
+        .bg-passive {
+            background-color: #6c757d;
+        }
+
+        #logWindow {
+            background-color: #212529;
+            color: #0f0;
+            height: 350px;
+            overflow-y: auto;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 0.8rem;
+        }
+
+        .metric-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            color: #6c757d;
+            font-weight: bold;
+        }
+
+        .metric-value {
+            font-size: 1.5rem;
+            font-weight: bold;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 250px;
+            width: 100%;
+        }
+
+        .ptp-time-display {
+            background: rgba(0, 0, 0, 0.2);
+            padding: 5px;
+            border-radius: 4px;
+            margin-top: 10px;
+            font-family: monospace;
+            font-size: 0.9rem;
+            text-align: center;
+        }
     </style>
 </head>
+
 <body class="bg-light">
-<div class="container-fluid p-4">
-    <div class="d-flex justify-content-between align-items-center mb-3">
-        <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun<small class="text-muted fs-6">v3.23</small></h3>
-        <span class="badge bg-secondary">{{ hostname }}</span>
-    </div>
-    
-    <div class="row g-3 mb-3">
-        <div class="col-md-4">
-            <div id="ptpCard" class="status-box bg-stopped shadow-sm">
-                <div class="d-flex justify-content-between">
-                    <small>PTP4L State</small>
-                    <span id="phcBadge" class="badge bg-dark border border-secondary" style="opacity: 0.3">SYNC OFF</span>
-                </div>
-                <div id="ptpState" class="h3 mb-0">STOPPED</div>
-                <small id="serviceStateDetail" class="opacity-75">Service Inactive</small>
-                
-                <div class="ptp-time-display">
-                    <small class="d-block text-white-50" style="font-size:0.7rem">PTP HARDWARE TIME</small>
-                    <span id="ptpTimeVal">--</span>
-                </div>
-            </div>
+    <div class="container-fluid p-4">
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h3 class="mb-0">⏱️ PTP4L Controller by Vega Sun <small class="text-muted fs-6">v4.0 Stable</small></h3>
+            <span class="badge bg-secondary">{{ hostname }}</span>
         </div>
 
-        <div class="col-md-4">
-            <div class="card h-100 p-3 shadow-sm">
-                <div class="d-flex h-100 align-items-center">
-                    <div class="w-50 text-center border-end">
-                        <div class="metric-label">Offset</div>
-                        <div id="offsetVal" class="metric-value text-primary">--</div>
-                        <small class="text-muted">ns</small>
+        <div class="row g-3 mb-3">
+            <div class="col-md-4">
+                <div id="ptpCard" class="status-box bg-stopped shadow-sm">
+                    <div class="d-flex justify-content-between">
+                        <small>PTP4L State</small>
+                        <span id="phcBadge" class="badge bg-dark border border-secondary" style="opacity: 0.3">SYNC
+                            OFF</span>
                     </div>
-                    <div class="w-50 text-center">
-                        <div class="metric-label">Path Delay</div>
-                        <div id="pathDelayVal" class="metric-value text-info">--</div>
-                        <small class="text-muted">ns</small>
+                    <div id="ptpState" class="h3 mb-0">STOPPED</div>
+                    <small id="serviceStateDetail" class="opacity-75">Service Inactive</small>
+                    <div class="ptp-time-display"><small class="d-block text-white-50" style="font-size:0.7rem">PTP
+                            HARDWARE TIME</small><span id="ptpTimeVal">--</span></div>
+                </div>
+            </div>
+            <div class="col-md-4">
+                <div class="card h-100 p-3 shadow-sm">
+                    <div class="d-flex h-100 align-items-center">
+                        <div class="w-50 text-center border-end">
+                            <div class="metric-label">Offset</div>
+                            <div id="offsetVal" class="metric-value text-primary">--</div><small
+                                class="text-muted">ns</small>
+                        </div>
+                        <div class="w-50 text-center">
+                            <div class="metric-label">Path Delay</div>
+                            <div id="pathDelayVal" class="metric-value text-info">--</div><small
+                                class="text-muted">ns</small>
+                        </div>
                     </div>
                 </div>
             </div>
-        </div>
-
-        <div class="col-md-4">
-            <div class="card h-100 p-3 shadow-sm justify-content-center">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <small class="text-muted fw-bold">Grandmaster ID</small>
-                    <span id="stepsBadge" class="badge bg-secondary">Hops: --</span>
+            <div class="col-md-4">
+                <div class="card h-100 p-3 shadow-sm justify-content-center">
+                    <div class="d-flex justify-content-between align-items-center mb-2"><small
+                            class="text-muted fw-bold">Grandmaster ID</small><span id="stepsBadge"
+                            class="badge bg-secondary">Hops: --</span></div>
+                    <div id="gmId" class="h6 mb-0 text-break font-monospace text-center bg-light p-2 rounded">
+                        Scanning...</div>
                 </div>
-                <div id="gmId" class="h6 mb-0 text-break font-monospace text-center bg-light p-2 rounded">Scanning...</div>
             </div>
         </div>
-    </div>
 
-    <div class="row g-3 mb-3">
-        <div class="col-12">
-            <div class="card shadow-sm">
-                <div class="card-header d-flex justify-content-between py-1 bg-white align-items-center">
-                    <span class="fw-bold small text-muted">📈 Offset Stability (Last 60s)</span>
-                    <span class="badge bg-light text-dark border">RMS: <span id="rmsVal">--</span></span>
+        <div class="row g-3 mb-3">
+            <!-- BMCA Visualizer -->
+            <div class="col-12">
+                <div class="card shadow-sm">
+                    <div class="card-header bg-white d-flex justify-content-between align-items-center"
+                        style="cursor: pointer;" data-bs-toggle="collapse" data-bs-target="#bmcaBody">
+                        <span class="fw-bold small text-muted">🕸️ BMCA Decision Analyzer</span>
+                        <span class="badge bg-light text-dark border" id="bmcaSummary">Loading...</span>
+                    </div>
+                    <div id="bmcaBody" class="collapse show">
+                        <div class="card-body">
+                            <div class="row">
+                                <div class="col-md-8">
+                                    <div class="table-responsive">
+                                        <table class="table table-sm table-bordered text-center align-middle"
+                                            style="font-size: 0.85rem;">
+                                            <thead class="table-light">
+                                                <tr>
+                                                    <th style="width:20%">Check</th>
+                                                    <th style="width:30%" class="text-primary">Local (Me)</th>
+                                                    <th style="width:10%">Vs</th>
+                                                    <th style="width:30%" class="text-danger">Current GM</th>
+                                                    <th style="width:10%">Result</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="bmcaTable"></tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="p-2 border rounded bg-light h-100">
+                                        <h6 class="small fw-bold text-muted mb-2">ST 2059-2 Flags</h6>
+                                        <div id="ptpFlags" class="d-flex flex-wrap gap-2"></div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
                 </div>
-                <div class="card-body p-2">
-                    <div class="chart-container">
-                        <canvas id="offsetChart"></canvas>
+            </div>
+        </div>
+
+        <div class="row g-3 mb-3">
+            <div class="col-lg-8">
+                <div class="card shadow-sm h-100">
+                    <div class="card-header d-flex justify-content-between py-1 bg-white align-items-center">
+                        <span class="fw-bold small text-muted">📈 Offset Stability</span>
+                        <span class="badge bg-light text-dark border">RMS: <span id="rmsVal">--</span></span>
+                    </div>
+                    <div class="card-body p-2">
+                        <div class="chart-container"><canvas id="offsetChart"></canvas></div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-4">
+                <div class="card shadow-sm h-100">
+                    <div class="card-header fw-bold small text-muted d-flex justify-content-between align-items-center">
+                        <span>📡 PTP Client Radar</span>
+                        <span class="badge bg-primary" id="clientCount">0</span>
+                    </div>
+                    <div class="card-body p-0">
+                        <div style="height: 250px; overflow-y: auto;">
+                            <table class="table table-sm table-striped mb-0" style="font-size: 0.8rem;">
+                                <thead class="table-light sticky-top">
+                                    <tr>
+                                        <th>IP Address</th>
+                                        <th>MAC</th>
+                                        <th>Iface</th>
+                                        <th>Last Seen</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="clientTableBody">
+                                    <tr>
+                                        <td colspan="4" class="text-center text-muted">Waiting for data...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="row g-3">
+            <div class="col-lg-4">
+                <div class="card shadow-sm">
+                    <div class="card-header fw-bold">⚙️ Configuration</div>
+                    <div class="card-body">
+                        <form id="configForm">
+                            <div class="row g-2 mb-3">
+                                <div class="col-8">
+                                    <label class="form-label fw-bold small text-uppercase text-secondary">Clock
+                                        Mode</label>
+                                    <select class="form-select" id="clockMode" onchange="toggleMode()">
+                                        <option value="OC" selected>Ordinary Clock (OC)</option>
+                                        <option value="BC">Boundary Clock (BC)</option>
+                                    </select>
+                                </div>
+                                <div class="col-4">
+                                    <label
+                                        class="form-label fw-bold small text-uppercase text-secondary">Monitor</label>
+                                    <select class="form-select" id="monitorMode">
+                                        <option value="disabled">OFF</option>
+                                        <option value="periodic" selected>Scan</option>
+                                        <option value="realtime">Real-Time</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div id="ocPanel" class="mb-3">
+                                <label class="small text-muted">Network Interface</label>
+                                <select class="form-select" id="interface">
+                                    <option value="" disabled selected>-- Select --</option>{% for nic in nics %}<option
+                                        value="{{ nic }}">{{ nic }}</option>{% endfor %}
+                                </select>
+                            </div>
+                            <div id="bcPanel" class="mb-3 border p-2 rounded bg-white" style="display:none;">
+                                <label class="small fw-bold text-primary mb-2 d-block">Boundary Clock Topology</label>
+                                <div class="mb-2"><label class="small text-muted">⬇️ Upstream (Slave)</label><select
+                                        class="form-select form-select-sm" id="bcSlaveIf">
+                                        <option value="" disabled selected>-- Select --</option>{% for nic in nics %}
+                                        <option value="{{ nic }}">{{ nic }}</option>{% endfor %}
+                                    </select></div>
+                                <div class="mb-2"><label class="small text-muted">⬆️ Downstream (Master)</label><select
+                                        class="form-select form-select-sm" id="bcMasterIf">
+                                        <option value="" disabled selected>-- Select --</option>{% for nic in nics %}
+                                        <option value="{{ nic }}">{{ nic }}</option>{% endfor %}
+                                    </select></div>
+                            </div>
+
+                            <div class="row g-2 mb-3 bg-light p-2 rounded border mx-0">
+                                <div class="col-6">
+                                    <label class="small fw-bold text-muted">Clock Sync</label>
+                                    <select class="form-select form-select-sm" id="syncMode">
+                                        <option value="none">Disabled</option>
+                                        <option value="slave" selected>Slave (PHC➔SYS)</option>
+                                        <option value="master">Master (SYS➔PHC)</option>
+                                    </select>
+                                </div>
+                                <div class="col-6">
+                                    <label class="small fw-bold text-muted">Timestamping</label>
+                                    <select class="form-select form-select-sm" id="timeStamping">
+                                        <option value="hardware">Hardware</option>
+                                        <option value="software">Software</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <hr>
+                            <div class="mb-2">
+                                <label class="small text-muted">Profile Manager</label>
+                                <div class="input-group input-group-sm">
+                                    <select class="form-select" id="profileSelect"
+                                        onchange="onUserSelectProfile()"></select>
+                                    <button type="button" class="btn btn-outline-success" onclick="saveProfile()"
+                                        title="Save">💾</button>
+                                    <button type="button" class="btn btn-outline-warning" id="btnRename"
+                                        onclick="renameProfile()" disabled title="Rename">✏️</button>
+                                    <button type="button" class="btn btn-outline-danger" id="btnDelete"
+                                        onclick="deleteProfile()" disabled title="Delete">🗑️</button>
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mb-2">
+                                <div class="col-4"><label class="small text-muted">Domain</label><input type="number"
+                                        class="form-control form-control-sm" id="domain"></div>
+                                <div class="col-4"><label class="small text-muted">Prio 1</label><input type="number"
+                                        class="form-control form-control-sm" id="priority1"></div>
+                                <div class="col-4"><label class="small text-muted">Prio 2</label><input type="number"
+                                        class="form-control form-control-sm" id="priority2"></div>
+                            </div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-6"><label class="small text-muted">Sync Int</label><input type="number"
+                                        class="form-control form-control-sm" id="logSyncInterval"></div>
+                                <div class="col-6"><label class="small text-muted">Announce Int</label><input
+                                        type="number" class="form-control form-control-sm" id="logAnnounceInterval">
+                                </div>
+                            </div>
+                            <div class="row g-2 mb-3">
+                                <div class="col-6"><label class="small text-muted">Delay Req</label><input type="number"
+                                        class="form-control form-control-sm" id="logMinDelayReqInterval"></div>
+                                <div class="col-6"><label class="small text-muted">Receipt T/O</label><input
+                                        type="number" class="form-control form-control-sm" id="announceReceiptTimeout">
+                                </div>
+                            </div>
+
+                            <div class="row g-2 mb-3">
+                                <div class="col-12">
+                                    <label class="small text-muted">Log Verbosity</label>
+                                    <select class="form-select form-select-sm" id="logLevel">
+                                        <option value="3">Error Only (3)</option>
+                                        <option value="4">Warning (4)</option>
+                                        <option value="5">Notice (5)</option>
+                                        <option value="6" selected>Info (6) - Default</option>
+                                        <option value="7">Debug (7) - High Load</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="d-grid gap-2"><button type="button" onclick="applyConfig()"
+                                    class="btn btn-primary btn-sm fw-bold">Apply & Restart</button><button type="button"
+                                    onclick="stopService()" class="btn btn-danger btn-sm">Stop</button></div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+            <div class="col-lg-8">
+                <div class="card shadow-sm h-100">
+                    <div class="card-header d-flex justify-content-between py-2"><span class="fw-bold small">PTP4L
+                            Logs</span><span class="badge bg-secondary" id="logTime">--:--:--</span></div>
+                    <div class="card-body p-0">
+                        <div id="logWindow">Connecting...</div>
                     </div>
                 </div>
             </div>
         </div>
     </div>
+    <script>
+        let profiles = {};
+        const FIELDS = ['timeStamping', 'domain', 'priority1', 'priority2', 'logSyncInterval', 'logAnnounceInterval', 'logMinDelayReqInterval', 'announceReceiptTimeout', 'syncMode', 'logLevel'];
+        const EXT_FIELDS = ['profileSelect', 'clockMode', 'interface', 'bcSlaveIf', 'bcMasterIf', 'monitorMode'];
+        let offsetChart = null;
+        let isUserInteractingLogs = false;
 
-    <div class="row g-3">
-        <div class="col-lg-4">
-            <div class="card shadow-sm">
-                <div class="card-header fw-bold">⚙️ Configuration</div>
-                <div class="card-body">
-                    <form id="configForm">
-                        <div class="row g-2 mb-3">
-                            <div class="col-8">
-                                <label class="form-label fw-bold small text-uppercase text-secondary">Clock Mode</label>
-                                <select class="form-select" id="clockMode" onchange="toggleMode()">
-                                    <option value="OC" selected>Ordinary Clock (Single Port)</option>
-                                    <option value="BC">Boundary Clock (Dual Port)</option>
-                                </select>
-                            </div>
-                            <div class="col-4">
-                                <label class="form-label fw-bold small text-uppercase text-secondary">Time Mode</label>
-                                <select class="form-select" id="timeStamping">
-                                    <option value="hardware" selected>Hardware</option>
-                                    <option value="software">Software</option>
-                                </select>
-                            </div>
-                        </div>
+        function init() { initChart(); fetchProfiles(); setInterval(updateStatus, 1000); setInterval(updateLogs, 2500); setInterval(updateClients, 3000); setInterval(updateBmca, 2000); }
 
-                        <div id="ocPanel" class="mb-3">
-                            <label class="small text-muted">Network Interface</label>
-                            <select class="form-select" id="interface">
-                                <option value="" disabled selected>-- Select --</option>
-                                {% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}
-                            </select>
-                        </div>
-                        <div id="bcPanel" class="mb-3 border p-2 rounded bg-white" style="display:none;">
-                            <label class="small fw-bold text-primary mb-2 d-block">Boundary Clock Topology</label>
-                            <div class="mb-2"><label class="small text-muted">⬇️ Upstream (Slave/In)</label><select class="form-select form-select-sm" id="bcSlaveIf"><option value="" disabled selected>-- Select --</option>{% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}</select></div>
-                            <div class="mb-2"><label class="small text-muted">⬆️ Downstream (Master/Out)</label><select class="form-select form-select-sm" id="bcMasterIf"><option value="" disabled selected>-- Select --</option>{% for nic in nics %}<option value="{{ nic }}">{{ nic }}</option>{% endfor %}</select></div>
-                        </div>
-                        
-                        <div class="row g-2 mb-3 bg-light p-2 rounded border mx-0">
-                            <div class="col-8">
-                                <label class="small fw-bold text-muted">Clock Sync</label>
-                                <select class="form-select form-select-sm" id="syncMode">
-                                    <option value="none">None (Disabled)</option>
-                                    <option value="slave" selected>Follow PTP (Slave: PHC ➔ SYS)</option>
-                                    <option value="master">Force Master (Master: SYS ➔ PHC)</option>
-                                </select>
-                            </div>
-                            <div class="col-4">
-                                <label class="small fw-bold text-muted">Log Level</label>
-                                <select class="form-select form-select-sm" id="logLevel" title="Log Level">
-                                    <option value="6" selected>Info</option>
-                                    <option value="5">Notice</option>
-                                    <option value="4">Warn</option>
-                                    <option value="3">Error</option>
-                                </select>
-                            </div>
-                        </div>
+        function updateBmca() {
+            fetch('/api/bmca').then(r => r.json()).then(d => {
+                // 1. Update Decision Table
+                const tbody = document.getElementById('bmcaTable');
+                let html = "";
 
-                        <hr>
-                        <div class="mb-2">
-                            <label class="small text-muted">Profile Manager</label>
-                            <div class="input-group input-group-sm">
-                                <select class="form-select" id="profileSelect" onchange="onUserSelectProfile()"></select>
-                                <button type="button" class="btn btn-outline-success" onclick="saveProfile()" title="Save as New">💾</button>
-                                <button type="button" class="btn btn-outline-warning" id="btnRename" onclick="renameProfile()" disabled title="Rename">✏️</button>
-                                <button type="button" class="btn btn-outline-danger" id="btnDelete" onclick="deleteProfile()" disabled title="Delete">🗑️</button>
-                            </div>
-                        </div>
+                if (d.decision.length === 0) {
+                    html = '<tr><td colspan="5" class="text-center text-muted">Waiting for PMC data...</td></tr>';
+                    document.getElementById('bmcaSummary').innerText = "Analyzing...";
+                    document.getElementById('bmcaSummary').className = "badge bg-secondary text-white";
+                } else {
+                    d.decision.forEach(step => {
+                        let lVal = (step.l !== undefined && step.l !== null) ? step.l : "--";
+                        let rVal = (step.r !== undefined && step.r !== null) ? step.r : "--";
+                        let rowClass = "";
+                        let resBadge = "";
 
-                        <div class="row g-2 mb-2">
-                            <div class="col-4"><label class="small text-muted">Domain</label><input type="number" class="form-control form-control-sm" id="domain"></div>
-                            <div class="col-4"><label class="small text-muted">Prio 1</label><input type="number" class="form-control form-control-sm" id="priority1"></div>
-                            <div class="col-4"><label class="small text-muted">Prio 2</label><input type="number" class="form-control form-control-sm" id="priority2"></div>
-                        </div>
-                        <div class="row g-2 mb-2">
-                            <div class="col-6"><label class="small text-muted">Sync Int</label><input type="number" class="form-control form-control-sm" id="logSyncInterval"></div>
-                            <div class="col-6"><label class="small text-muted">Announce Int</label><input type="number" class="form-control form-control-sm" id="logAnnounceInterval"></div>
-                        </div>
-                        <div class="row g-2 mb-3">
-                            <div class="col-6"><label class="small text-muted">Delay Req</label><input type="number" class="form-control form-control-sm" id="logMinDelayReqInterval"></div>
-                            <div class="col-6"><label class="small text-muted">Receipt T/O</label><input type="number" class="form-control form-control-sm" id="announceReceiptTimeout"></div>
-                        </div>
-                        <div class="d-grid gap-2"><button type="button" onclick="applyConfig()" class="btn btn-primary btn-sm fw-bold">Apply & Restart</button><button type="button" onclick="stopService()" class="btn btn-danger btn-sm">Stop</button></div>
-                    </form>
-                </div>
-            </div>
-        </div>
-        <div class="col-lg-8">
-            <div class="card shadow-sm h-100">
-                <div class="card-header d-flex justify-content-between py-2"><span class="fw-bold small">PTP4L Logs</span><span class="badge bg-secondary" id="logTime">--:--:--</span></div>
-                <div class="card-body p-0"><div id="logWindow">Connecting...</div></div>
-            </div>
-        </div>
-    </div>
-</div>
-<script>
-    let profiles={}; 
-    const FIELDS=['timeStamping','domain','priority1','priority2','logSyncInterval','logAnnounceInterval','logMinDelayReqInterval','announceReceiptTimeout', 'syncMode', 'logLevel'];
-    const EXT_FIELDS=['profileSelect','clockMode','interface','bcSlaveIf','bcMasterIf']; 
-    let offsetChart = null;
+                        if (step.result === "win") {
+                            rowClass = "table-success";
+                            resBadge = '<span class="badge bg-success">WIN</span>';
+                        } else if (step.result === "lose") {
+                            rowClass = "table-danger";
+                            resBadge = '<span class="badge bg-danger">LOSE</span>';
+                        } else if (step.result === "tie") {
+                            resBadge = '<span class="badge bg-light text-dark border">TIE</span>';
+                        }
 
-    function init(){ initChart(); fetchProfiles(); setInterval(updateStatus, 1000); setInterval(updateLogs, 2500); }
+                        // Special case for Identity win by default
+                        if (step.step === "Identity" && step.result === "win" && step.reason) {
+                            html += `<tr class="table-success"><td class="fw-bold">Identity</td><td colspan="3" class="small">${step.reason}</td><td><span class="badge bg-success">GM</span></td></tr>`;
+                        } else {
+                            html += `<tr class="${rowClass}"><td class="fw-bold small">${step.step}</td><td>${lVal}</td><td class="text-muted small">vs</td><td>${rVal}</td><td>${resBadge}</td></tr>`;
+                        }
+                    });
 
-    function saveConfigCache() {
-        let cache = {};
-        FIELDS.forEach(f => { const el=document.getElementById(f); if(el) cache[f] = (el.type === 'checkbox') ? el.checked : el.value; });
-        EXT_FIELDS.forEach(f => { const el=document.getElementById(f); if(el) cache[f]=el.value; });
-        localStorage.setItem('ptp4l_last_config', JSON.stringify(cache));
-    }
-
-    function loadConfigCache() {
-        const cacheStr = localStorage.getItem('ptp4l_last_config');
-        if(!cacheStr) return;
-        try {
-            const cache = JSON.parse(cacheStr);
-            [...FIELDS, ...EXT_FIELDS].forEach(f => {
-                const el = document.getElementById(f);
-                if(el && cache[f] !== undefined) {
-                    if(el.type === 'checkbox') el.checked = cache[f];
-                    else if(cache[f] !== "") el.value = cache[f];
-                }
-            });
-            toggleMode(); 
-            onProfileChange(); 
-        } catch(e) {}
-    }
-
-    function fetchProfiles(){ 
-        fetch('/api/profiles').then(r=>r.json()).then(d=>{ 
-            profiles=d; 
-            const s=document.getElementById('profileSelect'); 
-            s.innerHTML='<option value="" disabled selected>-- Select --</option>'; 
-            for(let i in d){ let o=document.createElement('option'); o.value=i; o.text=d[i].name+(d[i].is_builtin?"*":""); s.add(o); }
-            loadConfigCache();
-        });
-    }
-
-    function onUserSelectProfile() { loadProfileData(); onProfileChange(); }
-    function onProfileChange() {
-        const pid = document.getElementById('profileSelect').value;
-        const isUser = pid && pid.startsWith('user_');
-        document.getElementById('btnRename').disabled = !isUser;
-        document.getElementById('btnDelete').disabled = !isUser;
-    }
-
-    function renameProfile() {
-        const pid = document.getElementById('profileSelect').value;
-        if(!pid || !profiles[pid]) return;
-        const newName = prompt("Rename Profile:", profiles[pid].name);
-        if(!newName) return;
-        let cleanConfig = {};
-        FIELDS.forEach(f => { const el = document.getElementById(f); if(el) cleanConfig[f] = (el.type === 'checkbox') ? el.checked : el.value; else cleanConfig[f] = profiles[pid][f]; });
-        fetch('/api/profiles', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name: newName, config: cleanConfig}) })
-        .then(r=>r.json()).then(d => { if(d.status === 'success') { fetch('/api/profiles/' + pid, { method:'DELETE' }).then(() => { alert("Renamed!"); fetchProfiles(); }); } });
-    }
-
-    function deleteProfile() {
-        const pid = document.getElementById('profileSelect').value;
-        if(!confirm("Delete?")) return;
-        fetch('/api/profiles/' + pid, { method:'DELETE' }).then(r=>r.json()).then(d => { if(d.status==='success') { alert("Deleted!"); fetchProfiles(); } });
-    }
-    
-    function initChart(){
-        const ctx = document.getElementById('offsetChart');
-        if(!ctx) return;
-        offsetChart = new Chart(ctx.getContext('2d'), {
-            type: 'line',
-            data: { labels: [], datasets: [{ label: 'Offset (ns)', data: [], borderColor: '#0d6efd', backgroundColor: 'rgba(13, 110, 253, 0.1)', borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 }] },
-            options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { beginAtZero: false, grid: { color: 'rgba(0,0,0,0.05)' } } } }
-        });
-    }
-
-    function updateChartData(offset){
-        if(!offsetChart) return;
-        offsetChart.data.labels.push("");
-        offsetChart.data.datasets[0].data.push(offset);
-        if(offsetChart.data.labels.length > 60){ offsetChart.data.labels.shift(); offsetChart.data.datasets[0].data.shift(); }
-        offsetChart.update();
-        const data = offsetChart.data.datasets[0].data;
-        if(data.length > 0) {
-            const sumSq = data.reduce((a, b) => a + (b * b), 0);
-            document.getElementById('rmsVal').innerText = Math.round(Math.sqrt(sumSq / data.length)) + " ns";
-        }
-    }
-
-    function toggleMode(){ const m=document.getElementById('clockMode').value; document.getElementById('ocPanel').style.display=(m==='OC'?'block':'none'); document.getElementById('bcPanel').style.display=(m==='BC'?'block':'none'); }
-    
-    function loadProfileData(){ 
-        const p=document.getElementById('profileSelect').value; 
-        if(profiles[p]) FIELDS.forEach(f=>{ 
-            let el=document.getElementById(f);
-            if(el) {
-                if(el.type === 'checkbox') el.checked = profiles[p][f] === true;
-                else if (f === 'syncMode' && profiles[p][f] === undefined) { if (profiles[p]['syncSystem'] === true) el.value = 'slave'; else el.value = 'none'; }
-                else el.value = (profiles[p][f] !== undefined) ? profiles[p][f] : (f==='logLevel'?6:0);
-            }
-        }); 
-    }
-    
-    function applyConfig(){
-        const m=document.getElementById('clockMode').value; const d={clockMode:m};
-        if(m==='BC'){ d.bcSlaveIf=document.getElementById('bcSlaveIf').value; d.bcMasterIf=document.getElementById('bcMasterIf').value; if(!d.bcSlaveIf||!d.bcMasterIf||d.bcSlaveIf===d.bcMasterIf){ alert("Invalid BC Config"); return; } }
-        else{ d.interface=document.getElementById('interface').value; if(!d.interface){ alert("Select Interface"); return; } }
-        if(!confirm("Apply & Restart?")) return;
-        FIELDS.forEach(f=>{ let el=document.getElementById(f); d[f] = (el.type === 'checkbox') ? el.checked : el.value; });
-        saveConfigCache(); 
-        fetch('/api/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(d)}).then(r=>r.json()).then(r=>{ if(r.status==='success') alert("✅ Success!"); else alert("❌ "+r.message); }).catch(e=>alert("Error:"+e));
-    }
-
-    function updateStatus(){ 
-        fetch('/api/status').then(r=>r.json()).then(d=>{
-            const c=document.getElementById('ptpCard'), t=document.getElementById('ptpState');
-            const ptpTimeEl = document.getElementById('ptpTimeVal');
-            if(d.ptp_time && d.ptp_time !== "--") {
-                ptpTimeEl.innerText = d.ptp_time;
-                const year = parseInt(d.ptp_time.split('-')[0]);
-                if(year < 2023) { ptpTimeEl.style.color = "#ff6b6b"; ptpTimeEl.innerHTML = "⚠️ " + d.ptp_time; } else { ptpTimeEl.style.color = "#51cf66"; }
-            } else { ptpTimeEl.innerText = "--"; ptpTimeEl.style.color = "white"; }
-
-            if(d.ptp4l==='RUNNING'){
-                t.innerText=d.port||"UNKNOWN"; 
-                document.getElementById('serviceStateDetail').innerText="Running";
-                c.className='status-box shadow-sm ';
-                
-                const p = d.port;
-                if(p==='MASTER'||p==='GRAND_MASTER') c.className += 'bg-master';
-                else if(p==='SLAVE') c.className += 'bg-slave';
-                else if(p==='UNCALIBRATED'||p==='LISTENING'||p==='INITIALIZING') c.className += 'bg-syncing';
-                else if(p==='FAULTY'||p==='DISABLED'||p==='UNKNOWN') c.className += 'bg-stopped';
-                else if(p==='PASSIVE') c.className += 'bg-passive';
-                else c.className += 'bg-running';
-                
-                const phcEl = document.getElementById('phcBadge');
-                if(phcEl) {
-                    if(d.phc2sys === 'RUNNING') {
-                        phcEl.className = "badge bg-success border border-light";
-                        phcEl.style.opacity = "1.0";
-                        phcEl.innerText = "SYNC ON";
+                    // Summary Badge
+                    const sumBad = document.getElementById('bmcaSummary');
+                    if (d.winner === 'local') {
+                        sumBad.innerText = "Local is Master"; sumBad.className = "badge bg-success text-white";
+                    } else if (d.winner === 'remote') {
+                        sumBad.innerText = "Remote is Master"; sumBad.className = "badge bg-primary text-white";
                     } else {
-                        phcEl.className = "badge bg-dark border border-secondary";
-                        phcEl.style.opacity = "0.3";
-                        phcEl.innerText = "SYNC OFF";
+                        sumBad.innerText = "Unknown";
                     }
                 }
-                if(d.port !== 'UNKNOWN') updateChartData(Math.round(d.offset));
-            } else { 
-                c.className='status-box bg-stopped shadow-sm'; t.innerText="STOPPED"; 
-                document.getElementById('serviceStateDetail').innerText="Inactive"; 
-            }
-            document.getElementById('offsetVal').innerText = Math.round(d.offset); 
-            const delayEl = document.getElementById('pathDelayVal');
-            if(delayEl) delayEl.innerText = (d.port !== 'MASTER' && d.port !== 'GRAND_MASTER' && d.path_delay === 0) ? "--" : Math.round(d.path_delay);
-            document.getElementById('gmId').innerText = d.gm || "N/A";
-            const stepsEl = document.getElementById('stepsBadge');
-            if(stepsEl) stepsEl.innerText = (d.steps_removed !== -1) ? "Hops: " + d.steps_removed : "Hops: --";
-            document.getElementById('logTime').innerText = new Date().toLocaleTimeString();
-        }).catch(()=>{}); 
-    }
+                tbody.innerHTML = html;
 
-    function updateLogs(){ fetch('/api/logs').then(r=>r.json()).then(d=>{ const w=document.getElementById('logWindow'); if(w){ w.innerText=d.logs; w.scrollTop=w.scrollHeight; } }).catch(()=>{}); }
-    function saveProfile(){ let n=prompt("Name:"); if(n){ let c={}; FIELDS.forEach(f=>{ let el=document.getElementById(f); c[f]=(el.type==='checkbox')?el.checked:el.value; }); fetch('/api/profiles',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:n,config:c})}).then(()=>fetchProfiles()); } }
-    function stopService(){ if(confirm("Stop?")) fetch('/api/stop',{method:'POST'}); }
-    
-    init();
-</script>
+                // 2. Update Flags (ST 2059-2 Critical)
+                const flagsDiv = document.getElementById('ptpFlags');
+                const f = d.flags;
+                // Define flags to show: (key, label, expected_val)
+                const flagMap = [
+                    { k: 'ptpTimescale', l: 'PTP Scale', good: 1 },
+                    { k: 'timeTraceable', l: 'Time Trc', good: 1 },
+                    { k: 'frequencyTraceable', l: 'Freq Trc', good: 1 },
+                    { k: 'currentUtcOffsetValid', l: 'UTC Valid', good: 1 },
+                    { k: 'leap59', l: 'Leap59', good: 0 },
+                    { k: 'leap61', l: 'Leap61', good: 0 }
+                ];
+
+                let fHtml = "";
+                flagMap.forEach(item => {
+                    const val = f[item.k];
+                    let color = "bg-secondary";
+                    if (val !== undefined && val !== null) {
+                        // ST2059: PTP=1, TT=1, FT=1, UTCV=1 are good. Leaps are usually 0.
+                        if (item.good === 1) color = (val == 1) ? "bg-success" : "bg-danger";
+                        else color = (val == 1) ? "bg-warning text-dark" : "bg-success";
+
+                        fHtml += `<span class="badge ${color}" title="${item.k}">${item.l}: ${val}</span>`;
+                    }
+                });
+                // Add UTC Offset manually
+                if (f.currentUtcOffset !== undefined) fHtml += `<span class="badge bg-info text-dark">Offset: ${f.currentUtcOffset}s</span>`;
+
+                flagsDiv.innerHTML = fHtml;
+
+            }).catch(() => { });
+        }
+
+        function saveConfigCache() {
+            let cache = {};
+            FIELDS.forEach(f => { const el = document.getElementById(f); if (el) cache[f] = (el.type === 'checkbox') ? el.checked : el.value; });
+            EXT_FIELDS.forEach(f => { const el = document.getElementById(f); if (el) cache[f] = el.value; });
+            localStorage.setItem('ptp4l_last_config', JSON.stringify(cache));
+        }
+
+        function loadConfigCache() {
+            const cacheStr = localStorage.getItem('ptp4l_last_config');
+            if (!cacheStr) return;
+            try {
+                const cache = JSON.parse(cacheStr);
+                [...FIELDS, ...EXT_FIELDS].forEach(f => {
+                    const el = document.getElementById(f);
+                    if (el && cache[f] !== undefined) {
+                        if (el.type === 'checkbox') el.checked = cache[f];
+                        else if (cache[f] !== "") el.value = cache[f];
+                    }
+                });
+                toggleMode();
+                onProfileChange();
+            } catch (e) { }
+        }
+
+        function fetchProfiles() {
+            fetch('/api/profiles').then(r => r.json()).then(d => {
+                profiles = d;
+                const s = document.getElementById('profileSelect');
+                s.innerHTML = '<option value="" disabled selected>-- Select --</option>';
+                for (let i in d) { let o = document.createElement('option'); o.value = i; o.text = d[i].name + (d[i].is_builtin ? "*" : ""); s.add(o); }
+                loadConfigCache();
+            });
+        }
+
+        function onUserSelectProfile() { loadProfileData(); onProfileChange(); }
+        function onProfileChange() {
+            const pid = document.getElementById('profileSelect').value;
+            const isUser = pid && pid.startsWith('user_');
+            document.getElementById('btnRename').disabled = !isUser;
+            document.getElementById('btnDelete').disabled = !isUser;
+        }
+
+        function renameProfile() {
+            const pid = document.getElementById('profileSelect').value;
+            if (!pid || !profiles[pid]) return;
+            const newName = prompt("Rename Profile:", profiles[pid].name);
+            if (!newName) return;
+            let cleanConfig = {};
+            FIELDS.forEach(f => { const el = document.getElementById(f); if (el) cleanConfig[f] = (el.type === 'checkbox') ? el.checked : el.value; else cleanConfig[f] = profiles[pid][f]; });
+            fetch('/api/profiles', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newName, config: cleanConfig }) })
+                .then(r => r.json()).then(d => { if (d.status === 'success') { fetch('/api/profiles/' + pid, { method: 'DELETE' }).then(() => { alert("Renamed!"); fetchProfiles(); }); } });
+        }
+
+        function deleteProfile() {
+            const pid = document.getElementById('profileSelect').value;
+            if (!confirm("Delete?")) return;
+            fetch('/api/profiles/' + pid, { method: 'DELETE' }).then(r => r.json()).then(d => { if (d.status === 'success') { alert("Deleted!"); fetchProfiles(); } });
+        }
+
+        function initChart() {
+            const ctx = document.getElementById('offsetChart');
+            if (!ctx) return;
+            offsetChart = new Chart(ctx.getContext('2d'), {
+                type: 'line',
+                data: { labels: [], datasets: [{ label: 'Offset (ns)', data: [], borderColor: '#0d6efd', backgroundColor: 'rgba(13, 110, 253, 0.1)', borderWidth: 2, pointRadius: 0, fill: true, tension: 0.3 }] },
+                options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } }, scales: { x: { display: false }, y: { beginAtZero: false, grid: { color: 'rgba(0,0,0,0.05)' } } } }
+            });
+        }
+
+        function updateChartData(offset) {
+            if (!offsetChart) return;
+            offsetChart.data.labels.push("");
+            offsetChart.data.datasets[0].data.push(offset);
+            if (offsetChart.data.labels.length > 60) { offsetChart.data.labels.shift(); offsetChart.data.datasets[0].data.shift(); }
+            offsetChart.update();
+            const data = offsetChart.data.datasets[0].data;
+            if (data.length > 0) {
+                const sumSq = data.reduce((a, b) => a + (b * b), 0);
+                document.getElementById('rmsVal').innerText = Math.round(Math.sqrt(sumSq / data.length)) + " ns";
+            }
+        }
+
+        function toggleMode() { const m = document.getElementById('clockMode').value; document.getElementById('ocPanel').style.display = (m === 'OC' ? 'block' : 'none'); document.getElementById('bcPanel').style.display = (m === 'BC' ? 'block' : 'none'); }
+
+        function loadProfileData() {
+            const p = document.getElementById('profileSelect').value;
+            if (profiles[p]) FIELDS.forEach(f => {
+                let el = document.getElementById(f);
+                if (el) {
+                    if (el.type === 'checkbox') el.checked = profiles[p][f] === true;
+                    else if (f === 'syncMode' && profiles[p][f] === undefined) { if (profiles[p]['syncSystem'] === true) el.value = 'slave'; else el.value = 'none'; }
+                    else el.value = (profiles[p][f] !== undefined) ? profiles[p][f] : (f === 'logLevel' ? 6 : 0);
+                }
+            });
+        }
+
+        function applyConfig() {
+            const m = document.getElementById('clockMode').value; const d = { clockMode: m };
+            if (m === 'BC') { d.bcSlaveIf = document.getElementById('bcSlaveIf').value; d.bcMasterIf = document.getElementById('bcMasterIf').value; if (!d.bcSlaveIf || !d.bcMasterIf || d.bcSlaveIf === d.bcMasterIf) { alert("Invalid BC Config"); return; } }
+            else { d.interface = document.getElementById('interface').value; if (!d.interface) { alert("Select Interface"); return; } }
+            if (!confirm("Apply & Restart?")) return;
+            FIELDS.forEach(f => { let el = document.getElementById(f); d[f] = (el.type === 'checkbox') ? el.checked : el.value; });
+            // Manually add monitorMode
+            d['monitorMode'] = document.getElementById('monitorMode').value;
+            saveConfigCache();
+            fetch('/api/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(d) }).then(r => r.json()).then(r => { if (r.status === 'success') alert("✅ Success!"); else alert("❌ " + r.message); }).catch(e => alert("Error:" + e));
+        }
+
+        function updateStatus() {
+            fetch('/api/status').then(r => r.json()).then(d => {
+                const c = document.getElementById('ptpCard'), t = document.getElementById('ptpState');
+                const ptpTimeEl = document.getElementById('ptpTimeVal');
+                if (d.ptp_time && d.ptp_time !== "--") {
+                    ptpTimeEl.innerText = d.ptp_time;
+                    const year = parseInt(d.ptp_time.split('-')[0]);
+                    if (year < 2023) { ptpTimeEl.style.color = "#ff6b6b"; ptpTimeEl.innerHTML = "⚠️ " + d.ptp_time; } else { ptpTimeEl.style.color = "#51cf66"; }
+                } else { ptpTimeEl.innerText = "--"; ptpTimeEl.style.color = "white"; }
+
+                if (d.ptp4l === 'RUNNING') {
+                    t.innerText = d.port || "UNKNOWN";
+                    document.getElementById('serviceStateDetail').innerText = "Running";
+                    c.className = 'status-box shadow-sm ';
+
+                    const p = d.port;
+                    if (p === 'MASTER' || p === 'GRAND_MASTER') c.className += 'bg-master';
+                    else if (p === 'SLAVE') c.className += 'bg-slave';
+                    else if (p === 'UNCALIBRATED' || p === 'LISTENING' || p === 'INITIALIZING') c.className += 'bg-syncing';
+                    else if (p === 'FAULTY' || p === 'DISABLED' || p === 'UNKNOWN') c.className += 'bg-stopped';
+                    else if (p === 'PASSIVE') c.className += 'bg-passive';
+                    else c.className += 'bg-running';
+
+                    const phcEl = document.getElementById('phcBadge');
+                    if (phcEl) {
+                        if (d.phc2sys === 'RUNNING') {
+                            phcEl.className = "badge bg-success border border-light";
+                            phcEl.style.opacity = "1.0";
+                            phcEl.innerText = "SYNC ON";
+                        } else {
+                            phcEl.className = "badge bg-dark border border-secondary";
+                            phcEl.style.opacity = "0.3";
+                            phcEl.innerText = "SYNC OFF";
+                        }
+                    }
+                    if (d.port !== 'UNKNOWN') updateChartData(Math.round(d.offset));
+                } else {
+                    c.className = 'status-box bg-stopped shadow-sm'; t.innerText = "STOPPED";
+                    document.getElementById('serviceStateDetail').innerText = "Inactive";
+                }
+                document.getElementById('offsetVal').innerText = Math.round(d.offset);
+                const delayEl = document.getElementById('pathDelayVal');
+                if (delayEl) delayEl.innerText = (d.port !== 'MASTER' && d.port !== 'GRAND_MASTER' && d.path_delay === 0) ? "--" : Math.round(d.path_delay);
+                document.getElementById('gmId').innerText = d.gm || "N/A";
+                const stepsEl = document.getElementById('stepsBadge');
+                if (stepsEl) stepsEl.innerText = (d.steps_removed !== -1) ? "Hops: " + d.steps_removed : "Hops: --";
+                document.getElementById('logTime').innerText = new Date().toLocaleTimeString();
+            }).catch(() => { });
+        }
+
+        function updateClients() {
+            fetch('/api/clients').then(r => r.json()).then(d => {
+                const tbody = document.getElementById('clientTableBody');
+                document.getElementById('clientCount').innerText = d.length;
+                if (d.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted">No clients detected</td></tr>';
+                } else {
+                    let html = '';
+                    const now = Date.now() / 1000;
+                    d.forEach(c => {
+                        const ago = Math.round(now - c.last_seen);
+                        let ipHtml = c.ip;
+                        let rowClass = "";
+                        if (c.is_self) {
+                            ipHtml += ' <span class="badge bg-info text-dark" style="font-size: 0.7em;">ME</span>';
+                            rowClass = "table-info";
+                        }
+                        html += `<tr class="${rowClass}"><td>${ipHtml}</td><td class="text-muted small">${c.mac}</td><td><span class="badge bg-secondary">${c.iface}</span></td><td><span class="badge bg-success">${ago}s ago</span></td></tr>`;
+                    });
+                    tbody.innerHTML = html;
+                }
+            }).catch(() => { });
+        }
+
+        function updateLogs() {
+            const w = document.getElementById('logWindow');
+            if (!w) return;
+
+            // 1. 检测用户是否正在选中文本，如果是，则跳过本次更新（防打扰）
+            if (window.getSelection().toString().length > 0) return;
+
+            // 2. 检测用户是否已经手动滚动到了上方
+            // 允许 10px 的误差
+            const isAtBottom = (w.scrollHeight - w.scrollTop - w.clientHeight) < 20;
+
+            fetch('/api/logs').then(r => r.json()).then(d => {
+                // 只有内容变了才更新，减少DOM操作（可选，但简单起见直接赋值）
+                if (w.innerText !== d.logs) {
+                    w.innerText = d.logs;
+                    // 3. 只有当用户原本就在底部时，才自动滚动到底部
+                    if (isAtBottom) {
+                        w.scrollTop = w.scrollHeight;
+                    }
+                }
+            }).catch(() => { });
+        }
+
+        function saveProfile() {
+            let n = prompt("Name:");
+            if (n) {
+                let c = {};
+                FIELDS.forEach(f => {
+                    let el = document.getElementById(f);
+                    c[f] = (el.type === 'checkbox') ? el.checked : el.value;
+                });
+                fetch('/api/profiles', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: n, config: c })
+                })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Network response was not ok');
+                        }
+                        return response.json();
+                    })
+                    .then(() => fetchProfiles())
+                    .catch(error => {
+                        console.error('Error saving profile:', error);
+                        alert('Failed to save profile: ' + error.message);
+                    });
+            }
+        }
+
+        function stopService() {
+            if (confirm("Stop?")) {
+                fetch('/api/stop', {
+                    method: 'POST'
+                })
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Network response was not ok');
+                        }
+                        return response.json();
+                    })
+                    .then(() => {
+                        alert('Service stopped successfully');
+                    })
+                    .catch(error => {
+                        console.error('Error stopping service:', error);
+                        alert('Failed to stop service: ' + error.message);
+                    });
+            }
+        }
+
+        init();
+    </script>
 </body>
+
 </html>
